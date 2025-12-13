@@ -235,7 +235,8 @@ CREATE INDEX idx_maquinas_estado ON maquinas(estado);
 ## Dependencias
 
 ```
-npm install express mysql2 bcrypt express-session multer jszip xlsx mime-types dotenv
+npm install express mysql2 bcrypt express-session multer jszip xlsx mime-types dotenv nodemon --save-dev
+
 ```
 
 ## .env
