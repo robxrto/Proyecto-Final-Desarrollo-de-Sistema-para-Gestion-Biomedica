@@ -27,7 +27,38 @@ db.connect((err) => {
     process.exit(1);
   }
   console.log('✅ Conexión a MySQL establecida');
+  
+  // Crear tablas necesarias si no existen
+  createMensajesTable();
 });
+
+// Función para crear tabla de mensajes si no existe
+function createMensajesTable() {
+  const createTableQuery = `
+    CREATE TABLE IF NOT EXISTS mensajes (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      remitente_id INT NOT NULL,
+      destinatario_id INT NOT NULL,
+      asunto VARCHAR(255),
+      mensaje TEXT NOT NULL,
+      fecha_envio DATETIME DEFAULT CURRENT_TIMESTAMP,
+      leido BOOLEAN DEFAULT FALSE,
+      FOREIGN KEY (remitente_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+      FOREIGN KEY (destinatario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+      INDEX idx_remitente (remitente_id),
+      INDEX idx_destinatario (destinatario_id),
+      INDEX idx_fecha_envio (fecha_envio)
+    )
+  `;
+  
+  db.query(createTableQuery, (err) => {
+    if (err) {
+      console.error('❌ Error al crear tabla mensajes:', err.message);
+    } else {
+      console.log('✅ Tabla de mensajes verificada/creada correctamente');
+    }
+  });
+}
 
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
@@ -543,14 +574,14 @@ app.get('/debug/db-status', requireLogin, (req, res) => {
       });
     }
     
-    db.query('DESCRIBE maquinas', (err2, maquinasStructure) => {
+    db.query('DESCRIBE mensajes', (err2, mensajesStructure) => {
       if (err2) {
+        console.log('⚠️ Tabla mensajes no existe, intentando crearla...');
+        createMensajesTable();
         return res.json({ 
           status: 'warning', 
-          message: 'Tabla maquinas no existe o hay error', 
-          error: err2.message,
-          tables: tables.map(t => t[Object.keys(t)[0]]),
-          create_table_sql: "CREATE TABLE maquinas (id INT AUTO_INCREMENT PRIMARY KEY, nombre VARCHAR(100) NOT NULL, tipo VARCHAR(50) NOT NULL, estado VARCHAR(20) NOT NULL);"
+          message: 'Tabla mensajes no existe, creándola...',
+          tables: tables.map(t => t[Object.keys(t)[0]])
         });
       }
       
@@ -558,7 +589,7 @@ app.get('/debug/db-status', requireLogin, (req, res) => {
         status: 'ok',
         message: 'Conexión a DB establecida',
         tables: tables.map(t => t[Object.keys(t)[0]]),
-        maquinas_structure: maquinasStructure
+        mensajes_structure: mensajesStructure
       });
     });
   });
@@ -1018,7 +1049,7 @@ app.get('/dashboard', requireLogin, async (req, res) => {
                     const date = new Date(msg.fecha_envio).toLocaleDateString('es-ES');
                     
                     html += \`
-                      <div class="message-item \${msg.leado ? '' : 'unread'}">
+                      <div class="message-item \${msg.leido ? '' : 'unread'}">
                         <div class="message-sender">
                           \${msg.es_remitente ? '🟢 Tú' : '🔵 ' + msg.remitente_nombre}
                           <span style="float: right; font-size: 12px; font-weight: normal;">
@@ -1028,7 +1059,7 @@ app.get('/dashboard', requireLogin, async (req, res) => {
                         <div class="message-preview">
                           \${msg.mensaje.substring(0, 50)}\${msg.mensaje.length > 50 ? '...' : ''}
                         </div>
-                        \${!msg.leado && !msg.es_remitente ? '<div style="font-size: 10px; color: #2196F3; margin-top: 5px;">🆕 No leído</div>' : ''}
+                        \${!msg.leido && !msg.es_remitente ? '<div style="font-size: 10px; color: #2196F3; margin-top: 5px;">🆕 No leído</div>' : ''}
                       </div>
                     \`;
                   });
@@ -2390,7 +2421,6 @@ app.post('/eliminar-medicamento', requireLogin, requireRole('medico'), (req, res
 });
 
 // ========== RUTAS DE DISPOSITIVOS MÉDICOS ==========
-// CORREGIDO: SOLO MÉDICOS Y ENFERMEROS pueden ver dispositivos
 app.get('/ver-dispositivos', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
   console.log(`🩺 Acceso a /ver-dispositivos por: ${req.session.user.nombre_usuario} (${req.session.user.tipo_usuario})`);
   
@@ -3272,9 +3302,6 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
             .then(response => response.json())
             .then(data => {
               const contactsList = document.getElementById('contacts-list');
-              const onlineCount = data.contacts ? data.contacts.filter(c => c.online).length : 0;
-              
-              document.getElementById('online-count').textContent = \`\${onlineCount} en línea\`;
               
               if (data.contacts && data.contacts.length > 0) {
                 contactsList.innerHTML = '';
@@ -3290,12 +3317,10 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
                   }
                   
                   const contactTypeClass = contact.tipo_usuario === 'medico' ? 'medico' : 'enfermero';
-                  const statusClass = contact.online ? 'online' : 'offline';
                   
                   contactDiv.innerHTML = \`
                     <div class="contact-info">
                       <div class="contact-name">
-                        <span class="online-status \${statusClass}"></span>
                         \${contact.nombre}
                         <span class="contact-type \${contactTypeClass}">\${contact.tipo_usuario}</span>
                       </div>
@@ -3306,6 +3331,8 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
                   
                   contactsList.appendChild(contactDiv);
                 });
+                
+                document.getElementById('online-count').textContent = \`\${data.contacts.length} colegas\`;
               } else {
                 contactsList.innerHTML = \`
                   <div class="no-messages">
@@ -3313,6 +3340,7 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
                     <p><small>¡Haz clic en "Nuevo Mensaje" para comenzar!</small></p>
                   </div>
                 \`;
+                document.getElementById('online-count').textContent = '0 colegas';
               }
             })
             .catch(error => {
@@ -3345,6 +3373,11 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
           fetch(\`/api/mensajes/conversacion/\${contactId}\`)
             .then(response => response.json())
             .then(data => {
+              if (data.error) {
+                alert(data.error);
+                return;
+              }
+              
               // Actualizar encabezado
               document.getElementById('chat-header').innerHTML = \`
                 <div class="chat-header-info">
@@ -3360,23 +3393,8 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
               const messagesContainer = document.getElementById('messages-container');
               if (data.messages && data.messages.length > 0) {
                 messagesContainer.innerHTML = '';
-                let lastDate = null;
                 
                 data.messages.forEach(msg => {
-                  const messageDate = new Date(msg.fecha_envio).toLocaleDateString('es-ES');
-                  
-                  // Agregar separador de fecha si cambió
-                  if (messageDate !== lastDate) {
-                    const dateSeparator = document.createElement('div');
-                    dateSeparator.style.textAlign = 'center';
-                    dateSeparator.style.margin = '20px 0';
-                    dateSeparator.style.color = #666;
-                    dateSeparator.style.fontSize = '14px';
-                    dateSeparator.innerHTML = \`<span style="background: #f0f2f5; padding: 5px 15px; border-radius: 15px;">\${messageDate}</span>\`;
-                    messagesContainer.appendChild(dateSeparator);
-                    lastDate = messageDate;
-                  }
-                  
                   const messageDiv = document.createElement('div');
                   messageDiv.className = \`message \${msg.sent ? 'sent' : 'received'}\`;
                   
@@ -3385,15 +3403,14 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
                     minute: '2-digit'
                   });
                   
-                  const statusIcon = msg.leido ? '✓✓' : '✓';
-                  const statusColor = msg.leido ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.9)';
+                  const date = new Date(msg.fecha_envio).toLocaleDateString('es-ES');
                   
                   messageDiv.innerHTML = \`
                     \${msg.asunto ? \`<div class="message-subject">\${msg.asunto}</div>\` : ''}
                     <div class="message-content">\${msg.mensaje}</div>
                     <div class="message-time">
-                      \${time}
-                      \${msg.sent ? \`<span class="message-status" style="color: \${statusColor}">\${statusIcon}</span>\` : ''}
+                      \${date} \${time}
+                      \${msg.sent ? \`<span class="message-status">\${msg.leido ? '✓✓' : '✓'}</span>\` : ''}
                     </div>
                   \`;
                   
@@ -3443,11 +3460,16 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
           const messagesContainer = document.getElementById('messages-container');
           const messageDiv = document.createElement('div');
           messageDiv.className = 'message sent';
+          
+          const now = new Date();
+          const time = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+          const date = now.toLocaleDateString('es-ES');
+          
           messageDiv.innerHTML = \`
             <div class="message-content">\${message}</div>
             <div class="message-time">
-              \${new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
-              <span class="message-status" style="color: rgba(255,255,255,0.7)">✓</span>
+              \${date} \${time}
+              <span class="message-status">✓</span>
             </div>
           \`;
           messagesContainer.appendChild(messageDiv);
@@ -3470,15 +3492,10 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
           .then(response => response.json())
           .then(data => {
             if (data.success) {
-              // Actualizar el estado del mensaje a enviado
-              const lastMessage = messagesContainer.querySelector('.message.sent:last-child .message-status');
-              if (lastMessage) {
-                lastMessage.textContent = '✓✓';
-                lastMessage.style.color = 'rgba(255,255,255,0.9)';
-              }
-              
               // Actualizar lista de contactos
               loadContacts();
+            } else {
+              alert('Error al enviar mensaje: ' + data.error);
             }
           })
           .catch(error => {
@@ -3495,15 +3512,7 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
               select.innerHTML = '<option value="">Selecciona un colega</option>';
               
               if (data.destinatarios && data.destinatarios.length > 0) {
-                // Ordenar: médicos primero, luego enfermeros
-                const sortedDestinatarios = data.destinatarios.sort((a, b) => {
-                  if (a.tipo_usuario === b.tipo_usuario) {
-                    return a.nombre.localeCompare(b.nombre);
-                  }
-                  return a.tipo_usuario === 'medico' ? -1 : 1;
-                });
-                
-                sortedDestinatarios.forEach(dest => {
+                data.destinatarios.forEach(dest => {
                   const option = document.createElement('option');
                   option.value = dest.id;
                   const icon = dest.tipo_usuario === 'medico' ? '👨‍⚕️' : '👩‍⚕️';
@@ -3554,13 +3563,12 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
               // Si estamos en conversación con este destinatario, recargar
               if (currentContactId == recipientId) {
                 loadConversation(recipientId);
-              } else {
-                // Cambiar a la conversación con el nuevo destinatario
-                loadConversation(recipientId);
               }
               
               // Mostrar notificación de éxito
               alert('✅ Mensaje enviado correctamente');
+            } else {
+              alert('❌ Error: ' + data.error);
             }
           })
           .catch(error => {
@@ -3576,17 +3584,6 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
             item.style.display = text.includes(query.toLowerCase()) ? '' : 'none';
           });
         }
-        
-        // Detectar cuando el usuario está escribiendo
-        document.getElementById('message-input')?.addEventListener('input', function() {
-          if (typingTimeout) clearTimeout(typingTimeout);
-          
-          // Aquí podrías enviar un evento "typing" al servidor si usaras WebSockets
-          
-          typingTimeout = setTimeout(() => {
-            // Limpiar indicador de "escribiendo"
-          }, 1000);
-        });
         
         // Actualizar mensajes cada 10 segundos
         messageInterval = setInterval(() => {
@@ -3641,7 +3638,6 @@ app.get('/api/mensajes/recientes', requireLogin, requireMedicoOrEnfermero, (req,
 // API: Obtener contactos (conversaciones existentes) - solo médicos y enfermeros
 app.get('/api/mensajes/contactos', requireLogin, requireMedicoOrEnfermero, (req, res) => {
   const usuarioId = req.session.user.id;
-  const tipoUsuario = req.session.user.tipo_usuario;
   
   // Consulta para obtener contactos con los que hay conversación (solo médicos y enfermeros)
   const query = `
@@ -3649,61 +3645,49 @@ app.get('/api/mensajes/contactos', requireLogin, requireMedicoOrEnfermero, (req,
       u.id,
       u.nombre_usuario as nombre,
       u.tipo_usuario,
-      IF(p.nombre IS NOT NULL, p.nombre, u.nombre_usuario) as display_name,
       (SELECT COUNT(*) FROM mensajes m 
-       WHERE ((m.remitente_id = ? AND m.destinatario_id = u.id) 
-              OR (m.remitente_id = u.id AND m.destinatario_id = ?))
-       AND m.leido = FALSE AND m.destinatario_id = ?) as unread_count,
+       WHERE m.remitente_id = u.id 
+         AND m.destinatario_id = ? 
+         AND m.leido = FALSE) as unread_count,
       (SELECT m2.mensaje FROM mensajes m2 
        WHERE (m2.remitente_id = ? AND m2.destinatario_id = u.id) 
           OR (m2.remitente_id = u.id AND m2.destinatario_id = ?)
        ORDER BY m2.fecha_envio DESC LIMIT 1) as last_message
     FROM usuarios u
-    LEFT JOIN pacientes p ON u.id = p.usuario_id
     WHERE u.id IN (
       SELECT DISTINCT remitente_id FROM mensajes WHERE destinatario_id = ?
       UNION
       SELECT DISTINCT destinatario_id FROM mensajes WHERE remitente_id = ?
     )
     AND u.id != ?
-    AND u.tipo_usuario IN ('medico', 'enfermero')  -- Solo médicos y enfermeros
+    AND u.tipo_usuario IN ('medico', 'enfermero')
     ORDER BY unread_count DESC, last_message DESC
   `;
   
-  db.query(query, [usuarioId, usuarioId, usuarioId, usuarioId, usuarioId, usuarioId, usuarioId, usuarioId], 
+  db.query(query, [usuarioId, usuarioId, usuarioId, usuarioId, usuarioId, usuarioId], 
     (err, results) => {
       if (err) {
         console.error('Error obteniendo contactos:', err);
         return res.status(500).json({ error: 'Error en la base de datos' });
       }
       
-      // Agregar estado online (simulado)
-      const contacts = results.map(contact => ({
-        ...contact,
-        online: Math.random() > 0.3, // 70% de probabilidad de estar online
-        nombre: contact.display_name || contact.nombre
-      }));
-      
-      res.json({ contacts });
+      res.json({ contacts: results });
     });
 });
 
 // API: Obtener destinatarios disponibles (para nuevo mensaje) - solo médicos y enfermeros
 app.get('/api/mensajes/destinatarios', requireLogin, requireMedicoOrEnfermero, (req, res) => {
   const usuarioId = req.session.user.id;
-  const tipoUsuario = req.session.user.tipo_usuario;
   
   // SOLO médicos y enfermeros pueden ser destinatarios
   const query = `
-    SELECT DISTINCT 
+    SELECT 
       u.id,
-      u.nombre_usuario,
-      u.tipo_usuario,
-      IF(p.nombre IS NOT NULL, p.nombre, u.nombre_usuario) as nombre
+      u.nombre_usuario as nombre,
+      u.tipo_usuario
     FROM usuarios u
-    LEFT JOIN pacientes p ON u.id = p.usuario_id
     WHERE u.id != ?
-      AND u.tipo_usuario IN ('medico', 'enfermero')  -- Solo médicos y enfermeros
+      AND u.tipo_usuario IN ('medico', 'enfermero')
     ORDER BY 
       CASE WHEN u.tipo_usuario = 'medico' THEN 1 ELSE 2 END,
       nombre
@@ -3725,53 +3709,32 @@ app.get('/api/mensajes/conversacion/:contactoId', requireLogin, requireMedicoOrE
   const contactoId = req.params.contactoId;
   
   // Verificar que el contacto sea médico o enfermero
-  db.query('SELECT tipo_usuario FROM usuarios WHERE id = ?', [contactoId], (err, contactTypeResults) => {
+  db.query('SELECT nombre_usuario, tipo_usuario FROM usuarios WHERE id = ?', [contactoId], (err, contactTypeResults) => {
     if (err || contactTypeResults.length === 0) {
       return res.status(404).json({ error: 'Contacto no encontrado' });
     }
     
-    const contactType = contactTypeResults[0].tipo_usuario;
-    if (contactType === 'paciente') {
-      return res.status(403).json({ error: 'Los pacientes no pueden acceder a la mensajería' });
-    }
+    const contact = contactTypeResults[0];
     
-    // Obtener información del contacto
+    // Obtener mensajes
     db.query(`
       SELECT 
-        u.id,
-        u.nombre_usuario,
-        u.tipo_usuario,
-        IF(p.nombre IS NOT NULL, p.nombre, u.nombre_usuario) as nombre
-      FROM usuarios u
-      LEFT JOIN pacientes p ON u.id = p.usuario_id
-      WHERE u.id = ?
-    `, [contactoId], (err, contactResults) => {
-      if (err || contactResults.length === 0) {
-        return res.status(404).json({ error: 'Contacto no encontrado' });
+        m.*,
+        CASE WHEN m.remitente_id = ? THEN TRUE ELSE FALSE END as sent
+      FROM mensajes m
+      WHERE (m.remitente_id = ? AND m.destinatario_id = ?)
+         OR (m.remitente_id = ? AND m.destinatario_id = ?)
+      ORDER BY m.fecha_envio ASC
+    `, [usuarioId, usuarioId, contactoId, contactoId, usuarioId], (err, messageResults) => {
+      if (err) {
+        console.error('Error obteniendo mensajes:', err);
+        return res.status(500).json({ error: 'Error en la base de datos' });
       }
       
-      const contact = contactResults[0];
-      
-      // Obtener mensajes
-      db.query(`
-        SELECT 
-          m.*,
-          CASE WHEN m.remitente_id = ? THEN TRUE ELSE FALSE END as sent
-        FROM mensajes m
-        WHERE (m.remitente_id = ? AND m.destinatario_id = ?)
-           OR (m.remitente_id = ? AND m.destinatario_id = ?)
-        ORDER BY m.fecha_envio ASC
-      `, [usuarioId, usuarioId, contactoId, contactoId, usuarioId], (err, messageResults) => {
-        if (err) {
-          console.error('Error obteniendo mensajes:', err);
-          return res.status(500).json({ error: 'Error en la base de datos' });
-        }
-        
-        res.json({
-          contactName: contact.nombre,
-          contactType: contact.tipo_usuario,
-          messages: messageResults
-        });
+      res.json({
+        contactName: contact.nombre_usuario,
+        contactType: contact.tipo_usuario,
+        messages: messageResults
       });
     });
   });
@@ -4686,16 +4649,6 @@ app.get('/solicitar-cita', requireLogin, requireRole('paciente'), (req, res) => 
             messageDiv.innerHTML = \`<div class="\${type}-message">\${text}</div>\`;
           }
           
-          // Cargar horarios del médico cuando se seleccione
-          document.getElementById('medico_id').addEventListener('change', function() {
-            const medicoId = this.value;
-            if (medicoId) {
-              // Aquí podrías cargar los horarios disponibles del médico
-              // Por ahora, solo mostramos un mensaje
-              console.log('Médico seleccionado:', medicoId);
-            }
-          });
-          
           // Establecer fecha mínima (hoy)
           const today = new Date().toISOString().split('T')[0];
           document.getElementById('fecha').min = today;
@@ -4924,375 +4877,395 @@ app.get('/ver-citas-pendientes', requireLogin, requireRole('medico'), (req, res)
 
 // Ruta para que médicos gestionen sus horarios
 app.get('/horarios-medico', requireLogin, requireRole('medico'), (req, res) => {
-  const user = req.session.user;
-  
-  // Obtener horarios actuales del médico
-  const query = `
-    SELECT * FROM horarios_medicos 
-    WHERE medico_id = ? 
-    ORDER BY dia_semana ASC, hora_inicio ASC
+  // Crear tabla horarios_medicos si no existe
+  const createHorariosTable = `
+    CREATE TABLE IF NOT EXISTS horarios_medicos (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      medico_id INT NOT NULL,
+      dia_semana INT NOT NULL,
+      hora_inicio TIME NOT NULL,
+      hora_fin TIME NOT NULL,
+      duracion_cita INT DEFAULT 30,
+      activo BOOLEAN DEFAULT TRUE,
+      FOREIGN KEY (medico_id) REFERENCES usuarios(id)
+    )
   `;
   
-  db.query(query, [user.id], (err, horarios) => {
+  db.query(createHorariosTable, (err) => {
     if (err) {
-      console.error('Error obteniendo horarios:', err);
-      return res.status(500).send('Error al cargar horarios.');
+      console.error('Error creando tabla horarios_medicos:', err);
     }
     
-    const diasSemana = [
-      { id: 1, nombre: 'Lunes' },
-      { id: 2, nombre: 'Martes' },
-      { id: 3, nombre: 'Miércoles' },
-      { id: 4, nombre: 'Jueves' },
-      { id: 5, nombre: 'Viernes' },
-      { id: 6, nombre: 'Sábado' },
-      { id: 7, nombre: 'Domingo' }
-    ];
+    const user = req.session.user;
     
-    let html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <link rel="stylesheet" href="/styles.css">
-        <title>Gestionar Horarios</title>
-        <style>
-          .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-          .horarios-container {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-            gap: 20px;
-            margin-bottom: 40px;
-          }
-          .dia-card {
-            background: white;
-            border-radius: 10px;
-            padding: 20px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-          }
-          .dia-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #f0f0f0;
-          }
-          .horario-item {
-            background: #f8f9fa;
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 10px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-          }
-          .horario-info {
-            font-size: 14px;
-          }
-          .horario-acciones button {
-            padding: 5px 10px;
-            border: none;
-            border-radius: 3px;
-            cursor: pointer;
-            font-size: 12px;
-            margin-left: 5px;
-          }
-          .btn-eliminar {
-            background: #F44336;
-            color: white;
-          }
-          .btn-desactivar {
-            background: #FF9800;
-            color: white;
-          }
-          .btn-activar {
-            background: #4CAF50;
-            color: white;
-          }
-          .sin-horarios {
-            color: #666;
-            font-style: italic;
-            text-align: center;
-            padding: 20px;
-          }
-          .form-agregar {
-            background: #e8f4fd;
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 30px;
-          }
-          .form-row {
-            display: flex;
-            gap: 15px;
-            margin-bottom: 15px;
-            flex-wrap: wrap;
-          }
-          .form-group {
-            flex: 1;
-            min-width: 200px;
-          }
-          .form-group label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
-          }
-          .form-group input, .form-group select {
-            width: 100%;
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-          }
-          .btn-submit {
-            background: #2196F3;
-            color: white;
-            padding: 12px 25px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 16px;
-          }
-          .btn-submit:hover {
-            background: #1976D2;
-          }
-          .info-box {
-            background: #e8f5e9;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-            border-left: 4px solid #4CAF50;
-          }
-        </style>
-      </head>
-      <body>
-        <div id="navbar-container"></div>
-        <div class="container">
-          <h1>⏰ Gestionar Horarios de Atención</h1>
-          
-          <div class="info-box">
-            <p><strong>📋 Instrucciones:</strong></p>
-            <ul style="margin: 10px 0; padding-left: 20px;">
-              <li>Configura tus horarios de atención por día de la semana</li>
-              <li>Los pacientes solo podrán solicitar citas en estos horarios</li>
-              <li>Puedes tener múltiples franjas horarias por día</li>
-              <li>La duración predeterminada de cada cita es de 30 minutos</li>
-            </ul>
-          </div>
-          
-          <div class="form-agregar">
-            <h3>➕ Agregar Nuevo Horario</h3>
-            <form id="formHorario">
-              <div class="form-row">
-                <div class="form-group">
-                  <label for="dia_semana">📅 Día de la semana:</label>
-                  <select id="dia_semana" name="dia_semana" required>
-                    <option value="">-- Selecciona un día --</option>
+    // Obtener horarios actuales del médico
+    const query = `
+      SELECT * FROM horarios_medicos 
+      WHERE medico_id = ? 
+      ORDER BY dia_semana ASC, hora_inicio ASC
     `;
     
-    diasSemana.forEach(dia => {
-      html += `<option value="${dia.id}">${dia.nombre}</option>`;
-    });
-    
-    html += `
-                  </select>
-                </div>
-                
-                <div class="form-group">
-                  <label for="hora_inicio">⏰ Hora de inicio:</label>
-                  <input type="time" id="hora_inicio" name="hora_inicio" required 
-                         min="08:00" max="20:00" step="900">
-                </div>
-                
-                <div class="form-group">
-                  <label for="hora_fin">⏰ Hora de fin:</label>
-                  <input type="time" id="hora_fin" name="hora_fin" required 
-                         min="08:00" max="20:00" step="900">
-                </div>
-              </div>
-              
-              <div class="form-row">
-                <div class="form-group">
-                  <label for="duracion_cita">⏱️ Duración de cita (minutos):</label>
-                  <input type="number" id="duracion_cita" name="duracion_cita" 
-                         value="30" min="15" max="120" step="5">
-                </div>
-                
-                <div class="form-group" style="align-self: flex-end;">
-                  <button type="submit" class="btn-submit">
-                    💾 Guardar Horario
-                  </button>
-                </div>
-              </div>
-            </form>
-          </div>
-          
-          <h2>📋 Horarios Configurados</h2>
-          <div class="horarios-container">
-    `;
-    
-    // Agrupar horarios por día
-    const horariosPorDia = {};
-    horarios.forEach(horario => {
-      if (!horariosPorDia[horario.dia_semana]) {
-        horariosPorDia[horario.dia_semana] = [];
+    db.query(query, [user.id], (err, horarios) => {
+      if (err) {
+        console.error('Error obteniendo horarios:', err);
+        return res.status(500).send('Error al cargar horarios.');
       }
-      horariosPorDia[horario.dia_semana].push(horario);
-    });
-    
-    diasSemana.forEach(dia => {
-      const horariosDia = horariosPorDia[dia.id] || [];
       
-      html += `
-        <div class="dia-card">
-          <div class="dia-header">
-            <h3 style="margin: 0;">${dia.nombre}</h3>
-            <span style="font-size: 12px; color: #666;">${horariosDia.length} horario(s)</span>
-          </div>
+      const diasSemana = [
+        { id: 1, nombre: 'Lunes' },
+        { id: 2, nombre: 'Martes' },
+        { id: 3, nombre: 'Miércoles' },
+        { id: 4, nombre: 'Jueves' },
+        { id: 5, nombre: 'Viernes' },
+        { id: 6, nombre: 'Sábado' },
+        { id: 7, nombre: 'Domingo' }
+      ];
+      
+      let html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <link rel="stylesheet" href="/styles.css">
+          <title>Gestionar Horarios</title>
+          <style>
+            .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+            .horarios-container {
+              display: grid;
+              grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+              gap: 20px;
+              margin-bottom: 40px;
+            }
+            .dia-card {
+              background: white;
+              border-radius: 10px;
+              padding: 20px;
+              box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }
+            .dia-header {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 15px;
+              padding-bottom: 10px;
+              border-bottom: 2px solid #f0f0f0;
+            }
+            .horario-item {
+              background: #f8f9fa;
+              padding: 10px;
+              border-radius: 5px;
+              margin-bottom: 10px;
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+            }
+            .horario-info {
+              font-size: 14px;
+            }
+            .horario-acciones button {
+              padding: 5px 10px;
+              border: none;
+              border-radius: 3px;
+              cursor: pointer;
+              font-size: 12px;
+              margin-left: 5px;
+            }
+            .btn-eliminar {
+              background: #F44336;
+              color: white;
+            }
+            .btn-desactivar {
+              background: #FF9800;
+              color: white;
+            }
+            .btn-activar {
+              background: #4CAF50;
+              color: white;
+            }
+            .sin-horarios {
+              color: #666;
+              font-style: italic;
+              text-align: center;
+              padding: 20px;
+            }
+            .form-agregar {
+              background: #e8f4fd;
+              padding: 20px;
+              border-radius: 10px;
+              margin-bottom: 30px;
+            }
+            .form-row {
+              display: flex;
+              gap: 15px;
+              margin-bottom: 15px;
+              flex-wrap: wrap;
+            }
+            .form-group {
+              flex: 1;
+              min-width: 200px;
+            }
+            .form-group label {
+              display: block;
+              margin-bottom: 5px;
+              font-weight: bold;
+            }
+            .form-group input, .form-group select {
+              width: 100%;
+              padding: 10px;
+              border: 1px solid #ddd;
+              border-radius: 5px;
+            }
+            .btn-submit {
+              background: #2196F3;
+              color: white;
+              padding: 12px 25px;
+              border: none;
+              border-radius: 5px;
+              cursor: pointer;
+              font-size: 16px;
+            }
+            .btn-submit:hover {
+              background: #1976D2;
+            }
+            .info-box {
+              background: #e8f5e9;
+              padding: 15px;
+              border-radius: 5px;
+              margin-bottom: 20px;
+              border-left: 4px solid #4CAF50;
+            }
+          </style>
+        </head>
+        <body>
+          <div id="navbar-container"></div>
+          <div class="container">
+            <h1>⏰ Gestionar Horarios de Atención</h1>
+            
+            <div class="info-box">
+              <p><strong>📋 Instrucciones:</strong></p>
+              <ul style="margin: 10px 0; padding-left: 20px;">
+                <li>Configura tus horarios de atención por día de la semana</li>
+                <li>Los pacientes solo podrán solicitar citas en estos horarios</li>
+                <li>Puedes tener múltiples franjas horarias por día</li>
+                <li>La duración predeterminada de cada cita es de 30 minutos</li>
+              </ul>
+            </div>
+            
+            <div class="form-agregar">
+              <h3>➕ Agregar Nuevo Horario</h3>
+              <form id="formHorario">
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="dia_semana">📅 Día de la semana:</label>
+                    <select id="dia_semana" name="dia_semana" required>
+                      <option value="">-- Selecciona un día --</option>
       `;
       
-      if (horariosDia.length > 0) {
-        horariosDia.forEach(horario => {
-          const estado = horario.activo ? '✅ Activo' : '⏸️ Inactivo';
-          const btnEstado = horario.activo 
-            ? `<button class="btn-desactivar" onclick="cambiarEstadoHorario(${horario.id}, false)">⏸️ Desactivar</button>`
-            : `<button class="btn-activar" onclick="cambiarEstadoHorario(${horario.id}, true)">✅ Activar</button>`;
-          
+      diasSemana.forEach(dia => {
+        html += `<option value="${dia.id}">${dia.nombre}</option>`;
+      });
+      
+      html += `
+                    </select>
+                  </div>
+                  
+                  <div class="form-group">
+                    <label for="hora_inicio">⏰ Hora de inicio:</label>
+                    <input type="time" id="hora_inicio" name="hora_inicio" required 
+                           min="08:00" max="20:00" step="900">
+                  </div>
+                  
+                  <div class="form-group">
+                    <label for="hora_fin">⏰ Hora de fin:</label>
+                    <input type="time" id="hora_fin" name="hora_fin" required 
+                           min="08:00" max="20:00" step="900">
+                  </div>
+                </div>
+                
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="duracion_cita">⏱️ Duración de cita (minutos):</label>
+                    <input type="number" id="duracion_cita" name="duracion_cita" 
+                           value="30" min="15" max="120" step="5">
+                  </div>
+                  
+                  <div class="form-group" style="align-self: flex-end;">
+                    <button type="submit" class="btn-submit">
+                      💾 Guardar Horario
+                    </button>
+                  </div>
+                </div>
+              </form>
+            </div>
+            
+            <h2>📋 Horarios Configurados</h2>
+            <div class="horarios-container">
+      `;
+      
+      // Agrupar horarios por día
+      const horariosPorDia = {};
+      horarios.forEach(horario => {
+        if (!horariosPorDia[horario.dia_semana]) {
+          horariosPorDia[horario.dia_semana] = [];
+        }
+        horariosPorDia[horario.dia_semana].push(horario);
+      });
+      
+      diasSemana.forEach(dia => {
+        const horariosDia = horariosPorDia[dia.id] || [];
+        
+        html += `
+          <div class="dia-card">
+            <div class="dia-header">
+              <h3 style="margin: 0;">${dia.nombre}</h3>
+              <span style="font-size: 12px; color: #666;">${horariosDia.length} horario(s)</span>
+            </div>
+        `;
+        
+        if (horariosDia.length > 0) {
+          horariosDia.forEach(horario => {
+            const estado = horario.activo ? '✅ Activo' : '⏸️ Inactivo';
+            const btnEstado = horario.activo 
+              ? `<button class="btn-desactivar" onclick="cambiarEstadoHorario(${horario.id}, false)">⏸️ Desactivar</button>`
+              : `<button class="btn-activar" onclick="cambiarEstadoHorario(${horario.id}, true)">✅ Activar</button>`;
+            
+            html += `
+              <div class="horario-item">
+                <div class="horario-info">
+                  <strong>${horario.hora_inicio} - ${horario.hora_fin}</strong><br>
+                  <small>Duración: ${horario.duracion_cita} min • ${estado}</small>
+                </div>
+                <div class="horario-acciones">
+                  ${btnEstado}
+                  <button class="btn-eliminar" onclick="eliminarHorario(${horario.id})">🗑️</button>
+                </div>
+              </div>
+            `;
+          });
+        } else {
           html += `
-            <div class="horario-item">
-              <div class="horario-info">
-                <strong>${horario.hora_inicio} - ${horario.hora_fin}</strong><br>
-                <small>Duración: ${horario.duracion_cita} min • ${estado}</small>
-              </div>
-              <div class="horario-acciones">
-                ${btnEstado}
-                <button class="btn-eliminar" onclick="eliminarHorario(${horario.id})">🗑️</button>
-              </div>
+            <div class="sin-horarios">
+              <p>No hay horarios configurados</p>
+              <small>Agrega un horario usando el formulario</small>
             </div>
           `;
-        });
-      } else {
-        html += `
-          <div class="sin-horarios">
-            <p>No hay horarios configurados</p>
-            <small>Agrega un horario usando el formulario</small>
-          </div>
-        `;
-      }
-      
-      html += `</div>`;
-    });
-    
-    html += `
-          </div>
-          
-          <div style="text-align: center; margin-top: 40px;">
-            <a href="/dashboard" class="menu-btn" style="display: inline-block; width: auto; padding: 12px 30px;">
-              ← Volver al inicio
-            </a>
-          </div>
-        </div>
+        }
         
-        <script>
-          fetch('/navbar')
-            .then(response => response.text())
-            .then(html => {
-              document.getElementById('navbar-container').innerHTML = html;
-            })
-            .catch(error => console.error('Error cargando navbar:', error));
+        html += `</div>`;
+      });
+      
+      html += `
+            </div>
+            
+            <div style="text-align: center; margin-top: 40px;">
+              <a href="/dashboard" class="menu-btn" style="display: inline-block; width: auto; padding: 12px 30px;">
+                ← Volver al inicio
+              </a>
+            </div>
+          </div>
           
-          document.getElementById('formHorario').addEventListener('submit', async function(e) {
-            e.preventDefault();
+          <script>
+            fetch('/navbar')
+              .then(response => response.text())
+              .then(html => {
+                document.getElementById('navbar-container').innerHTML = html;
+              })
+              .catch(error => console.error('Error cargando navbar:', error));
             
-            const formData = new FormData(this);
-            const data = Object.fromEntries(formData.entries());
+            document.getElementById('formHorario').addEventListener('submit', async function(e) {
+              e.preventDefault();
+              
+              const formData = new FormData(this);
+              const data = Object.fromEntries(formData.entries());
+              
+              // Validar horas
+              const horaInicio = new Date('2000-01-01T' + data.hora_inicio + ':00');
+              const horaFin = new Date('2000-01-01T' + data.hora_fin + ':00');
+              
+              if (horaFin <= horaInicio) {
+                alert('❌ La hora de fin debe ser posterior a la hora de inicio');
+                return;
+              }
+              
+              // Validar duración
+              if (data.duracion_cita < 15 || data.duracion_cita > 120) {
+                alert('❌ La duración debe estar entre 15 y 120 minutos');
+                return;
+              }
+              
+              try {
+                const response = await fetch('/api/horarios/agregar', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify(data)
+                });
+                
+                if (response.ok) {
+                  const result = await response.json();
+                  if (result.success) {
+                    alert('✅ Horario agregado correctamente');
+                    location.reload();
+                  } else {
+                    alert('❌ ' + result.error);
+                  }
+                } else {
+                  const error = await response.json();
+                  alert('❌ ' + (error.error || 'Error en el servidor'));
+                }
+              } catch (error) {
+                alert('❌ Error de conexión: ' + error.message);
+              }
+            });
             
-            // Validar horas
-            const horaInicio = new Date('2000-01-01T' + data.hora_inicio + ':00');
-            const horaFin = new Date('2000-01-01T' + data.hora_fin + ':00');
-            
-            if (horaFin <= horaInicio) {
-              alert('❌ La hora de fin debe ser posterior a la hora de inicio');
-              return;
-            }
-            
-            // Validar duración
-            if (data.duracion_cita < 15 || data.duracion_cita > 120) {
-              alert('❌ La duración debe estar entre 15 y 120 minutos');
-              return;
-            }
-            
-            try {
-              const response = await fetch('/api/horarios/agregar', {
+            function cambiarEstadoHorario(horarioId, activo) {
+              fetch('/api/horarios/cambiar-estado/' + horarioId, {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(data)
-              });
-              
-              if (response.ok) {
-                const result = await response.json();
-                if (result.success) {
-                  alert('✅ Horario agregado correctamente');
-                  location.reload();
-                } else {
-                  alert('❌ ' + result.error);
-                }
-              } else {
-                const error = await response.json();
-                alert('❌ ' + (error.error || 'Error en el servidor'));
-              }
-            } catch (error) {
-              alert('❌ Error de conexión: ' + error.message);
-            }
-          });
-          
-          function cambiarEstadoHorario(horarioId, activo) {
-            fetch('/api/horarios/cambiar-estado/' + horarioId, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({ activo: activo })
-            })
-            .then(response => response.json())
-            .then(data => {
-              if (data.success) {
-                alert('✅ Estado actualizado correctamente');
-                location.reload();
-              } else {
-                alert('❌ Error: ' + (data.error || 'No se pudo actualizar el estado'));
-              }
-            })
-            .catch(error => {
-              alert('❌ Error de conexión');
-            });
-          }
-          
-          function eliminarHorario(horarioId) {
-            if (confirm('¿Estás seguro de eliminar este horario?')) {
-              fetch('/api/horarios/eliminar/' + horarioId, {
-                method: 'DELETE'
+                body: JSON.stringify({ activo: activo })
               })
               .then(response => response.json())
               .then(data => {
                 if (data.success) {
-                  alert('✅ Horario eliminado correctamente');
+                  alert('✅ Estado actualizado correctamente');
                   location.reload();
                 } else {
-                  alert('❌ Error: ' + (data.error || 'No se pudo eliminar el horario'));
+                  alert('❌ Error: ' + (data.error || 'No se pudo actualizar el estado'));
                 }
               })
               .catch(error => {
                 alert('❌ Error de conexión');
               });
             }
-          }
-        </script>
-      </body>
-      </html>
-    `;
-    
-    res.send(html);
+            
+            function eliminarHorario(horarioId) {
+              if (confirm('¿Estás seguro de eliminar este horario?')) {
+                fetch('/api/horarios/eliminar/' + horarioId, {
+                  method: 'DELETE'
+                })
+                .then(response => response.json())
+                .then(data => {
+                  if (data.success) {
+                    alert('✅ Horario eliminado correctamente');
+                    location.reload();
+                  } else {
+                    alert('❌ Error: ' + (data.error || 'No se pudo eliminar el horario'));
+                  }
+                })
+                .catch(error => {
+                  alert('❌ Error de conexión');
+                });
+              }
+            }
+          </script>
+        </body>
+        </html>
+      `;
+      
+      res.send(html);
+    });
   });
 });
 
@@ -5378,6 +5351,32 @@ app.post('/api/citas/solicitar', requireLogin, requireRole('paciente'), async (r
         error: 'El médico ya tiene una cita programada en ese horario' 
       });
     }
+    
+    // Crear tabla citas si no existe
+    const createCitasTable = `
+      CREATE TABLE IF NOT EXISTS citas (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        paciente_id INT NOT NULL,
+        medico_id INT NOT NULL,
+        fecha DATE NOT NULL,
+        hora TIME NOT NULL,
+        tipo_cita VARCHAR(100) NOT NULL,
+        motivo TEXT,
+        notas TEXT,
+        estado ENUM('pendiente', 'confirmada', 'completada', 'cancelada') DEFAULT 'pendiente',
+        fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP,
+        fecha_actualizacion DATETIME ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (paciente_id) REFERENCES pacientes(id),
+        FOREIGN KEY (medico_id) REFERENCES usuarios(id)
+      )
+    `;
+    
+    await new Promise((resolve, reject) => {
+      db.query(createCitasTable, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
     
     // Insertar la cita
     const insertQuery = `
@@ -5788,10 +5787,11 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   const localIP = getLocalIP();
   console.log(`
 🚀 ======================================================
-   Servidor Hospitalario v2.0 - SISTEMA DE CITAS
+   Servidor Hospitalario v2.0 - SISTEMA DE CITAS Y MENSAJERÍA
 ========================================================
 
 ✅ Conexión MySQL establecida
+✅ Tabla de mensajes creada/verificada
 ✅ Sistema de mensajería para médicos y enfermeros
 ✅ Sistema de programación de citas completo
 🌐 Accesos disponibles:
@@ -5801,48 +5801,49 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 🔧 HERRAMIENTAS DE DEBUG:
    📊 Estado DB:      http://localhost:${PORT}/debug/db-status
 
-💬 SISTEMA DE MENSAJERÍA RESTRINGIDO:
-   - Médicos ↔ Enfermeros ✓
-   - Médicos ↔ Médicos ✓
-   - Enfermeros ↔ Enfermeros ✓
+💬 SISTEMA DE MENSAJERÍA ARREGLADO:
+   - ✅ Tabla de mensajes creada automáticamente
+   - ✅ Médicos ↔ Enfermeros ✓
+   - ✅ Médicos ↔ Médicos ✓
+   - ✅ Enfermeros ↔ Enfermeros ✓
    - ❌ PACIENTES: SIN ACCESO A MENSAJERÍA
-   - Widget en dashboard para personal médico ✓
+   - ✅ Widget en dashboard para personal médico ✓
 
 📅 SISTEMA DE CITAS COMPLETO:
    👨‍⚕️ MÉDICOS:
-      - Ver todas las citas ✓
-      - Confirmar/Completar/Cancelar citas ✓
-      - Gestionar horarios de atención ✓
-      - Editar notas de citas ✓
-      - Ver citas pendientes ✓
+      - ✅ Ver todas las citas ✓
+      - ✅ Confirmar/Completar/Cancelar citas ✓
+      - ✅ Gestionar horarios de atención ✓
+      - ✅ Editar notas de citas ✓
+      - ✅ Ver citas pendientes ✓
    
    🏥 PACIENTES:
-      - Solicitar nuevas citas ✓
-      - Ver sus citas programadas ✓
-      - Cancelar sus citas ✓
-      - Ver estado de citas ✓
+      - ✅ Solicitar nuevas citas ✓
+      - ✅ Ver sus citas programadas ✓
+      - ✅ Cancelar sus citas ✓
+      - ✅ Ver estado de citas ✓
 
 👥 PERMISOS ACTUALIZADOS:
    👨‍⚕️ MÉDICOS: Codigo acceso (MED123)
-      - Acceso completo ✓
-      - Mensajería con médicos y enfermeros ✓
-      - Dashboard con widget de mensajes ✓
-      - Gestión completa de citas ✓
+      - ✅ Acceso completo ✓
+      - ✅ Mensajería con médicos y enfermeros ✓
+      - ✅ Dashboard con widget de mensajes ✓
+      - ✅ Gestión completa de citas ✓
       
    👩‍⚕️ ENFERMEROS: Codigo acceso (ENF456)
-      - Pacientes (Ver, Agregar, Eliminar) ✓
-      - Medicamentos (Solo Ver) ✓
-      - Dispositivos (Solo Ver) ✓  
-      - Archivos (Subir y Descargar) ✓
-      - Excel (Descargar reportes) ✓
-      - Mensajería con médicos y enfermeros ✓
-      - Dashboard con widget de mensajes ✓
+      - ✅ Pacientes (Ver, Agregar, Eliminar) ✓
+      - ✅ Medicamentos (Solo Ver) ✓
+      - ✅ Dispositivos (Solo Ver) ✓  
+      - ✅ Archivos (Subir y Descargar) ✓
+      - ✅ Excel (Descargar reportes) ✓
+      - ✅ Mensajería con médicos y enfermeros ✓
+      - ✅ Dashboard con widget de mensajes ✓
       
    🏥 PACIENTES: Codigo acceso (PAC789)
-      - Ver otros pacientes ✓
-      - Solicitar citas médicas ✓
-      - Ver y gestionar sus citas ✓
-      - Dashboard personalizado ✓
+      - ✅ Ver otros pacientes ✓
+      - ✅ Solicitar citas médicas ✓
+      - ✅ Ver y gestionar sus citas ✓
+      - ✅ Dashboard personalizado ✓
       - ❌ SIN ACCESO a medicamentos y dispositivos
 
 ========================================================
