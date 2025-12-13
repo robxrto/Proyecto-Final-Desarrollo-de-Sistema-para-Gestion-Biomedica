@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Subir Archivos</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <div id="navbar-container"></div>
+    <div class="container">
+        <h1>Subir Archivos</h1>
+        <div class="menu-card">
+            <form id="uploadForm" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label for="archivo">Seleccionar archivo:</label>
+                    <input type="file" id="archivo" name="archivo" accept=".xlsx,.xls,.pdf" required>
+                    <small>Solo se permiten archivos Excel (.xlsx, .xls) o PDF</small>
+                </div>
+                <button type="submit">Subir Archivo</button>
+            </form>
+            <div id="message" style="margin-top: 20px;"></div>
+        </div>
+        <a href="/">Volver al inicio</a>
+    </div>
+
+    <script>
+        // Cargar navbar
+        fetch('/navbar')
+            .then(response => response.text())
+            .then(html => {
+                document.getElementById('navbar-container').innerHTML = html;
+            });
+
+        // Manejar envío del formulario
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = new FormData();
+            const fileInput = document.getElementById('archivo');
+            
+            if (fileInput.files.length === 0) {
+                alert('Por favor selecciona un archivo');
+                return;
+            }
+            
+            formData.append('archivo', fileInput.files[0]);
+            
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    document.getElementById('message').innerHTML = `
+                        <div class="alert alert-success">
+                            ✅ ${result.message}
+                        </div>
+                    `;
+                    document.getElementById('uploadForm').reset();
+                } else {
+                    document.getElementById('message').innerHTML = `
+                        <div class="alert alert-error">
+                            ❌ ${result.error}
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                document.getElementById('message').innerHTML = `
+                    <div class="alert alert-error">
+                        ❌ Error al subir archivo: ${error.message}
+                    </div>
+                `;
+            }
+        });
+    </script>
+</body>
+</html>

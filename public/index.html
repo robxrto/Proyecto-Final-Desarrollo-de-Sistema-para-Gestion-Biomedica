@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inventario Hospitalario - Dashboard</title>
+    <link rel="stylesheet" href="/styles.css">
+    <style>
+        /* Estilos adicionales para el dashboard */
+        .dashboard-header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #eaeaea;
+        }
+        
+        .dashboard-header h1 {
+            color: #1a2980;
+            margin-bottom: 10px;
+        }
+        
+        .dashboard-header p {
+            color: #666;
+            font-size: 1.1rem;
+        }
+        
+        .user-info {
+            background: linear-gradient(to right, #1a2980, #26d0ce);
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 4px 15px rgba(26, 41, 128, 0.2);
+        }
+        
+        .user-info .welcome {
+            font-size: 1.2rem;
+            font-weight: 600;
+        }
+        
+        .user-info .role {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+        }
+        
+        .menu-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            margin-top: 20px;
+        }
+        
+        .menu-card {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.08);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            border: 1px solid #eaeaea;
+        }
+        
+        .menu-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+        }
+        
+        .menu-card h2 {
+            color: #1a2980;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+            font-size: 1.5rem;
+        }
+        
+        .menu-btn {
+            display: block;
+            width: 100%;
+            padding: 14px;
+            margin-bottom: 12px;
+            background: #f8f9fa;
+            color: #333;
+            text-decoration: none;
+            border-radius: 8px;
+            text-align: center;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            border: 2px solid transparent;
+        }
+        
+        .menu-btn:hover {
+            background: #1a2980;
+            color: white;
+            border-color: #1a2980;
+            transform: translateX(5px);
+        }
+        
+        .quick-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+        
+        .stat-card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.05);
+            text-align: center;
+            border-left: 4px solid #1a2980;
+            transition: transform 0.3s ease;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+        
+        .stat-card .number {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #1a2980;
+            margin: 10px 0;
+            transition: color 0.3s ease;
+        }
+        
+        .stat-card .label {
+            color: #666;
+            font-size: 0.9rem;
+        }
+        
+        .card-description {
+            color: #666;
+            margin-bottom: 20px;
+            font-size: 0.95rem;
+            line-height: 1.5;
+        }
+        
+        .error-message {
+            background-color: #f8d7da;
+            color: #721c24;
+            padding: 12px 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: center;
+            display: none;
+            border-left: 4px solid #dc3545;
+        }
+        
+        .loading {
+            color: #6c757d;
+            font-style: italic;
+        }
+        
+        .success-message {
+            background-color: #d4edda;
+            color: #155724;
+            padding: 12px 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: center;
+            display: none;
+            border-left: 4px solid #28a745;
+        }
+        
+        .refresh-btn {
+            background: #26d0ce;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            margin-top: 10px;
+            transition: background 0.3s ease;
+        }
+        
+        .refresh-btn:hover {
+            background: #1a8c8a;
+        }
+        
+        .stats-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .stats-header h2 {
+            color: #1a2980;
+            margin: 0;
+        }
+        
+        @media (max-width: 768px) {
+            .menu-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .user-info {
+                flex-direction: column;
+                gap: 10px;
+                text-align: center;
+            }
+            
+            .stats-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="navbar-container"></div>
+    
+    <div class="container">
+        <div class="dashboard-header">
+            <h1>🏥 Sistema de Gestión Hospitalaria</h1>
+            <p>Panel de control - Administración integral de pacientes, medicamentos y dispositivos</p>
+        </div>
+        
+        <div id="user-info-container" class="user-info" style="display: none;">
+            <!-- Se llena dinámicamente con JavaScript -->
+        </div>
+        
+        <!-- Mensajes de estado -->
+        <div id="error-message" class="error-message"></div>
+        <div id="success-message" class="success-message"></div>
+        
+        <!-- Estadísticas rápidas -->
+        <div id="quick-stats-container">
+            <div class="stats-header">
+                <h2>📊 Estadísticas Rápidas</h2>
+                <button id="refresh-stats-btn" class="refresh-btn" title="Actualizar estadísticas">
+                    🔄 Actualizar
+                </button>
+            </div>
+            <div id="quick-stats" class="quick-stats">
+                <div class="stat-card">
+                    <div class="number" id="stat-pacientes">0</div>
+                    <div class="label">Pacientes registrados</div>
+                </div>
+                <div class="stat-card">
+                    <div class="number" id="stat-medicamentos">0</div>
+                    <div class="label">Medicamentos en inventario</div>
+                </div>
+                <div class="stat-card">
+                    <div class="number" id="stat-dispositivos">0</div>
+                    <div class="label">Dispositivos disponibles</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="menu-grid">
+            <div class="menu-card">
+                <h2>👥 Pacientes</h2>
+                <p class="card-description">Gestiona la información de los pacientes registrados en el sistema</p>
+                <a href="/ver-pacientes" class="menu-btn">📋 Ver Pacientes</a>
+                <a href="/agregar-paciente" class="menu-btn" id="btn-agregar-paciente">➕ Agregar Paciente</a>
+                <a href="/eliminar-paciente" class="menu-btn" id="btn-eliminar-paciente">🗑️ Eliminar Paciente</a>
+            </div>
+            
+            <div class="menu-card">
+                <h2>💊 Medicamentos</h2>
+                <p class="card-description">Administra el inventario de medicamentos y sus funciones</p>
+                <a href="/ver-medicamentos" class="menu-btn">📋 Ver Medicamentos</a>
+                <a href="/agregar-medicamento" class="menu-btn" id="btn-agregar-medicamento">➕ Agregar Medicamento</a>
+                <a href="/eliminar-medicamento" class="menu-btn" id="btn-eliminar-medicamento">🗑️ Eliminar Medicamento</a>
+            </div>
+            
+            <div class="menu-card">
+                <h2>🩺 Dispositivos Médicos</h2>
+                <p class="card-description">Controla el estado y disponibilidad de equipos médicos</p>
+                <a href="/ver-dispositivos" class="menu-btn">📋 Ver Dispositivos</a>
+                <a href="/agregar-dispositivo" class="menu-btn" id="btn-agregar-dispositivo">➕ Agregar Dispositivo</a>
+                <a href="/eliminar-dispositivo" class="menu-btn" id="btn-eliminar-dispositivo">🗑️ Eliminar Dispositivo</a>
+            </div>
+            
+            <div class="menu-card">
+                <h2>📁 Archivos</h2>
+                <p class="card-description">Sube y descarga documentos, reportes y archivos del sistema</p>
+                <a href="/subir-archivo" class="menu-btn" id="btn-subir-archivo">⬆️ Subir Archivos</a>
+                <a href="/descargar-archivos" class="menu-btn" id="btn-descargar-archivos">⬇️ Descargar Archivos</a>
+            </div>
+            
+            <!-- NUEVA TARJETA: Descargar Excel -->
+            <div class="menu-card" id="excel-card">
+                <h2>📊 Descargar Excel</h2>
+                <p class="card-description">Genera reportes en formato Excel de pacientes, medicamentos y dispositivos</p>
+                <a href="/descargar-excel" class="menu-btn" id="btn-descargar-excel">📥 Descargar Reportes Excel</a>
+                <a href="/descargar-excel-pacientes" class="menu-btn" id="btn-excel-pacientes">👥 Excel de Pacientes</a>
+                <a href="/descargar-excel-medicamentos" class="menu-btn" id="btn-excel-medicamentos">💊 Excel de Medicamentos</a>
+                <a href="/descargar-excel-dispositivos" class="menu-btn" id="btn-excel-dispositivos">🩺 Excel de Dispositivos</a>
+            </div>
+        </div>
+        
+        <div style="text-align: center; margin-top: 50px; padding-top: 30px; border-top: 1px solid #eaeaea;">
+            <p style="color: #888; font-size: 0.9rem;">
+                Sistema Hospitalario v1.0 • 
+                <span id="current-date"></span> • 
+                <span id="user-type"></span> •
+                <span id="last-update">Última actualización: <span id="update-time">--:--:--</span></span>
+            </p>
+        </div>
+    </div>
+
+    <script>
+        // Variables globales
+        let userTipo = '';
+        let userName = '';
+        let refreshInterval;
+        
+        // Función para mostrar mensaje de error
+        function mostrarError(mensaje) {
+            const errorDiv = document.getElementById('error-message');
+            errorDiv.textContent = mensaje;
+            errorDiv.style.display = 'block';
+            
+            // Ocultar después de 5 segundos
+            setTimeout(() => {
+                errorDiv.style.display = 'none';
+            }, 5000);
+            
+            console.error('Error:', mensaje);
+        }
+        
+        // Función para mostrar mensaje de éxito
+        function mostrarExito(mensaje) {
+            const successDiv = document.getElementById('success-message');
+            successDiv.textContent = mensaje;
+            successDiv.style.display = 'block';
+            
+            // Ocultar después de 3 segundos
+            setTimeout(() => {
+                successDiv.style.display = 'none';
+            }, 3000);
+        }
+        
+        // Función para actualizar la hora de última actualización
+        function actualizarHoraActualizacion() {
+            const now = new Date();
+            const timeString = now.toLocaleTimeString('es-ES', { 
+                hour: '2-digit', 
+                minute: '2-digit', 
+                second: '2-digit' 
+            });
+            document.getElementById('update-time').textContent = timeString;
+        }
+        
+        // Función para cargar estadísticas rápidas DESDE EL SERVIDOR
+        async function cargarEstadisticas() {
+            console.log('📊 Cargando estadísticas...');
+            
+            try {
+                // Mostrar estado de carga
+                document.getElementById('stat-pacientes').textContent = '...';
+                document.getElementById('stat-medicamentos').textContent = '...';
+                document.getElementById('stat-dispositivos').textContent = '...';
+                
+                // Cargar contador de pacientes
+                const pacientesRes = await fetch('/api/contar-pacientes');
+                if (!pacientesRes.ok) {
+                    throw new Error(`Error ${pacientesRes.status} al cargar pacientes`);
+                }
+                const pacientesData = await pacientesRes.json();
+                document.getElementById('stat-pacientes').textContent = pacientesData.total;
+                console.log(`✅ Pacientes: ${pacientesData.total}`);
+                
+                // Cargar contador de medicamentos
+                const medicamentosRes = await fetch('/api/contar-medicamentos');
+                if (!medicamentosRes.ok) {
+                    throw new Error(`Error ${medicamentosRes.status} al cargar medicamentos`);
+                }
+                const medicamentosData = await medicamentosRes.json();
+                document.getElementById('stat-medicamentos').textContent = medicamentosData.total;
+                console.log(`✅ Medicamentos: ${medicamentosData.total}`);
+                
+                // Cargar contador de dispositivos
+                const dispositivosRes = await fetch('/api/contar-dispositivos');
+                if (!dispositivosRes.ok) {
+                    throw new Error(`Error ${dispositivosRes.status} al cargar dispositivos`);
+                }
+                const dispositivosData = await dispositivosRes.json();
+                document.getElementById('stat-dispositivos').textContent = dispositivosData.total;
+                console.log(`✅ Dispositivos disponibles: ${dispositivosData.total}`);
+                
+                // Actualizar hora de última actualización
+                actualizarHoraActualizacion();
+                
+                // Mostrar mensaje de éxito
+                mostrarExito('✅ Estadísticas actualizadas correctamente');
+                
+            } catch (error) {
+                console.error('❌ Error cargando estadísticas:', error);
+                mostrarError(`Error al cargar estadísticas: ${error.message}`);
+                
+                // Mostrar valores de error
+                document.getElementById('stat-pacientes').textContent = 'Error';
+                document.getElementById('stat-medicamentos').textContent = 'Error';
+                document.getElementById('stat-dispositivos').textContent = 'Error';
+                
+                // Reintentar en 10 segundos
+                setTimeout(cargarEstadisticas, 10000);
+            }
+        }
+        
+        // Función para cargar información del usuario
+        async function cargarInformacionUsuario() {
+            try {
+                const response = await fetch('/tipo-usuario');
+                if (!response.ok) {
+                    throw new Error('No autenticado');
+                }
+                
+                const data = await response.json();
+                userTipo = data.tipo_usuario;
+                console.log('✅ Usuario tipo:', userTipo);
+                
+                // Obtener nombre de usuario si está disponible
+                try {
+                    const userResponse = await fetch('/api/usuario-actual');
+                    if (userResponse.ok) {
+                        const userData = await userResponse.json();
+                        userName = userData.nombre_usuario;
+                    } else {
+                        userName = 'Usuario';
+                    }
+                } catch {
+                    userName = 'Usuario';
+                }
+                
+                // Mostrar información del usuario
+                const userInfoContainer = document.getElementById('user-info-container');
+                
+                let roleText = '';
+                switch(userTipo) {
+                    case 'medico':
+                        roleText = '👨‍⚕️ Médico';
+                        break;
+                    case 'enfermero':
+                        roleText = '👩‍⚕️ Enfermero/a';
+                        break;
+                    case 'paciente':
+                        roleText = '👤 Paciente';
+                        break;
+                    default:
+                        roleText = userTipo;
+                }
+                
+                userInfoContainer.innerHTML = `
+                    <div class="welcome">Bienvenido, <strong>${userName}</strong></div>
+                    <div class="role">${roleText}</div>
+                `;
+                userInfoContainer.style.display = 'flex';
+                
+                // Actualizar permisos según tipo de usuario
+                actualizarPermisos(userTipo);
+                
+                // Actualizar información de pie de página
+                document.getElementById('user-type').textContent = roleText;
+                
+                // Configurar fecha actual
+                const now = new Date();
+                const options = { 
+                    weekday: 'long', 
+                    year: 'numeric', 
+                    month: 'long', 
+                    day: 'numeric' 
+                };
+                document.getElementById('current-date').textContent = 
+                    now.toLocaleDateString('es-ES', options);
+                
+            } catch (error) {
+                console.error('❌ Error cargando información del usuario:', error);
+                if (error.message === 'No autenticado') {
+                    window.location.href = '/login';
+                } else {
+                    mostrarError('Error al cargar información del usuario');
+                }
+            }
+        }
+        
+        // Función para actualizar permisos según tipo de usuario
+        function actualizarPermisos(tipoUsuario) {
+            console.log('🔐 Actualizando permisos para:', tipoUsuario);
+            
+            // Obtener todos los botones
+            const botones = {
+                agregarPaciente: document.getElementById('btn-agregar-paciente'),
+                eliminarPaciente: document.getElementById('btn-eliminar-paciente'),
+                agregarMedicamento: document.getElementById('btn-agregar-medicamento'),
+                eliminarMedicamento: document.getElementById('btn-eliminar-medicamento'),
+                agregarDispositivo: document.getElementById('btn-agregar-dispositivo'),
+                eliminarDispositivo: document.getElementById('btn-eliminar-dispositivo'),
+                subirArchivo: document.getElementById('btn-subir-archivo'),
+                descargarArchivos: document.getElementById('btn-descargar-archivos'),
+                descargarExcel: document.getElementById('btn-descargar-excel'),
+                excelPacientes: document.getElementById('btn-excel-pacientes'),
+                excelMedicamentos: document.getElementById('btn-excel-medicamentos'),
+                excelDispositivos: document.getElementById('btn-excel-dispositivos'),
+                excelCard: document.getElementById('excel-card')
+            };
+            
+            // Restablecer todos los botones
+            Object.values(botones).forEach(btn => {
+                if (btn) {
+                    btn.style.display = 'block';
+                    btn.style.opacity = '1';
+                    btn.style.pointerEvents = 'auto';
+                }
+            });
+            
+            // Aplicar restricciones según tipo de usuario
+            switch(tipoUsuario) {
+                case 'medico':
+                    // Médico tiene acceso completo
+                    console.log('✅ Permisos completos (médico)');
+                    break;
+                    
+                case 'enfermero':
+                    // Enfermero: no puede agregar medicamentos ni dispositivos
+                    // PERO SÍ puede subir, descargar archivos y descargar Excel
+                    console.log('✅ Permisos de enfermero');
+                    if (botones.agregarMedicamento) {
+                        botones.agregarMedicamento.style.display = 'none';
+                        console.log('❌ Ocultando agregar medicamento');
+                    }
+                    if (botones.eliminarMedicamento) {
+                        botones.eliminarMedicamento.style.display = 'none';
+                        console.log('❌ Ocultando eliminar medicamento');
+                    }
+                    if (botones.agregarDispositivo) {
+                        botones.agregarDispositivo.style.display = 'none';
+                        console.log('❌ Ocultando agregar dispositivo');
+                    }
+                    if (botones.eliminarDispositivo) {
+                        botones.eliminarDispositivo.style.display = 'none';
+                        console.log('❌ Ocultando eliminar dispositivo');
+                    }
+                    // Enfermeros SÍ pueden subir, descargar archivos y descargar Excel
+                    console.log('✅ Enfermeros pueden subir/descargar archivos y Excel');
+                    break;
+                    
+                case 'paciente':
+                    // Paciente: solo puede ver pacientes, no puede descargar Excel
+                    console.log('✅ Permisos de paciente (solo lectura)');
+                    Object.values(botones).forEach(btn => {
+                        if (btn && btn.id !== '') {
+                            // Solo ocultar botones con ID (los de acción)
+                            btn.style.display = 'none';
+                            console.log(`❌ Ocultando ${btn.id}`);
+                        }
+                    });
+                    // Ocultar toda la tarjeta de Excel para pacientes
+                    if (botones.excelCard) {
+                        botones.excelCard.style.display = 'none';
+                        console.log('❌ Ocultando tarjeta de Excel para paciente');
+                    }
+                    // Permitir ver pacientes pero no las acciones
+                    break;
+                    
+                default:
+                    console.warn('⚠️ Tipo de usuario no reconocido:', tipoUsuario);
+            }
+        }
+        
+        // Manejar clics en botones para verificar permisos
+        document.addEventListener('click', function(e) {
+            if (e.target.classList.contains('menu-btn')) {
+                const buttonId = e.target.id;
+                const tipoUsuario = userTipo;
+                
+                // Verificar permisos según el botón clickeado
+                if (tipoUsuario === 'paciente') {
+                    // Paciente solo puede ver pacientes
+                    if (!buttonId && e.target.href.includes('/ver-pacientes')) {
+                        return; // Permitir
+                    }
+                    if (buttonId || !e.target.href.includes('/ver-pacientes')) {
+                        e.preventDefault();
+                        mostrarError('No tienes permisos para realizar esta acción.');
+                        return;
+                    }
+                }
+                
+                if (tipoUsuario === 'enfermero') {
+                    // Enfermero no puede agregar medicamentos ni dispositivos
+                    if (buttonId === 'btn-agregar-medicamento' || 
+                        buttonId === 'btn-eliminar-medicamento' ||
+                        buttonId === 'btn-agregar-dispositivo' ||
+                        buttonId === 'btn-eliminar-dispositivo') {
+                        e.preventDefault();
+                        mostrarError('Solo los médicos pueden realizar esta acción.');
+                        return;
+                    }
+                    // Enfermero SÍ puede subir, descargar archivos y descargar Excel - no bloquear estos botones
+                }
+            }
+        });
+        
+        // Inicializar la aplicación cuando se cargue la página
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('🚀 Inicializando dashboard...');
+            
+            // 1. Cargar navbar
+            fetch('/navbar')
+                .then(response => {
+                    if (!response.ok) {
+                        console.error('❌ Error cargando navbar:', response.status);
+                        return '';
+                    }
+                    return response.text();
+                })
+                .then(html => {
+                    if (html) {
+                        document.getElementById('navbar-container').innerHTML = html;
+                        console.log('✅ Navbar cargado');
+                    }
+                })
+                .catch(error => {
+                    console.error('❌ Error cargando navbar:', error);
+                    mostrarError('Error al cargar la barra de navegación');
+                });
+            
+            // 2. Cargar información del usuario
+            cargarInformacionUsuario();
+            
+            // 3. Cargar estadísticas por primera vez
+            setTimeout(() => {
+                cargarEstadisticas();
+            }, 1000); // Pequeño delay para asegurar que el usuario esté autenticado
+            
+            // 4. Configurar botón de actualización manual
+            document.getElementById('refresh-stats-btn').addEventListener('click', function() {
+                console.log('🔄 Actualizando estadísticas manualmente...');
+                cargarEstadisticas();
+            });
+            
+            // 5. Configurar actualización automática cada 30 segundos
+            refreshInterval = setInterval(cargarEstadisticas, 30000);
+            
+            console.log('✅ Dashboard inicializado correctamente');
+        });
+        
+        // Limpiar intervalo cuando se cierre la página
+        window.addEventListener('beforeunload', function() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Descargar Archivos</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <div id="navbar-container"></div>
+    <div class="container">
+        <h1>Descargar Archivos</h1>
+        <div class="menu-card">
+            <h2>Archivos Disponibles</h2>
+            <div id="archivosList" style="margin: 20px 0;">
+                <p>Cargando archivos...</p>
+            </div>
+            <button onclick="descargarZip()" class="menu-btn">📦 Descargar Todo en ZIP</button>
+        </div>
+        <a href="/">Volver al inicio</a>
+    </div>
+
+    <script>
+        // Cargar navbar
+        fetch('/navbar')
+            .then(response => response.text())
+            .then(html => {
+                document.getElementById('navbar-container').innerHTML = html;
+            });
+
+        // Cargar lista de archivos
+        async function cargarArchivos() {
+            try {
+                const response = await fetch('/archivos-subidos');
+                const archivos = await response.json();
+                
+                if (archivos.length === 0) {
+                    document.getElementById('archivosList').innerHTML = '<p>No hay archivos subidos.</p>';
+                    return;
+                }
+                
+                let html = '<table>';
+                html += '<tr><th>Nombre</th><th>Tipo</th><th>Usuario</th></tr>';
+                
+                archivos.forEach(archivo => {
+                    html += `
+                        <tr>
+                            <td>${archivo.nombre_archivo}</td>
+                            <td>${archivo.tipo}</td>
+                            <td>${archivo.usuario || 'admin'}</td>
+                        </tr>
+                    `;
+                });
+                
+                html += '</table>';
+                document.getElementById('archivosList').innerHTML = html;
+            } catch (error) {
+                document.getElementById('archivosList').innerHTML = `
+                    <div class="alert alert-error">
+                        ❌ Error al cargar archivos: ${error.message}
+                    </div>
+                `;
+            }
+        }
+        
+        // Descargar ZIP
+        function descargarZip() {
+            window.open('/generar-zip', '_blank');
+        }
+        
+        // Cargar archivos al iniciar
+        cargarArchivos();
+    </script>
+</body>
+</html>
