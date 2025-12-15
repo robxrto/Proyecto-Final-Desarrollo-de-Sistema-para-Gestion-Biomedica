@@ -28,7 +28,8 @@ db.connect((err) => {
   console.log('✅ Conexión a MySQL establecida');
   createMensajesTable();
   createCitasTable();
-  createHistorialesTable(); // Agregada esta línea
+  createHistorialesTable();
+  createHorariosMedicoTable(); // Nueva tabla para horarios
 });
 
 // Crear tabla de mensajes si no existe
@@ -108,6 +109,28 @@ function createHistorialesTable() {
   db.query(createTableQuery, (err) => {
     if (err) console.error('❌ Error al crear tabla historiales_clinicos:', err.message);
     else console.log('✅ Tabla de historiales clínicos verificada/creada correctamente');
+  });
+}
+
+// Crear tabla de horarios médicos si no existe
+function createHorariosMedicoTable() {
+  const createTableQuery = `
+    CREATE TABLE IF NOT EXISTS horarios_medico (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      medico_id INT NOT NULL,
+      dia_semana ENUM('Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo') NOT NULL,
+      hora_inicio TIME NOT NULL,
+      hora_fin TIME NOT NULL,
+      disponible BOOLEAN DEFAULT TRUE,
+      FOREIGN KEY (medico_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+      INDEX idx_medico (medico_id),
+      INDEX idx_dia_semana (dia_semana)
+    )
+  `;
+  
+  db.query(createTableQuery, (err) => {
+    if (err) console.error('❌ Error al crear tabla horarios_medico:', err.message);
+    else console.log('✅ Tabla de horarios_medico verificada/creada correctamente');
   });
 }
 
@@ -659,13 +682,13 @@ app.get('/dashboard', requireLogin, async (req, res) => {
             box-shadow: 0 10px 25px rgba(0,0,0,0.15);
           }
           
-          .stat-card.pacientes { border-left-color: #5685c2ff; }
+          .stat-card.pacientes { border-left-color: #2196F3; }
           .stat-card.medicamentos { border-left-color: #2196F3; }
-          .stat-card.dispositivos { border-left-color: #9C27B0; }
-          .stat-card.mensajes { border-left-color: #772da8ff; }
-          .stat-card.citas { border-left-color: #FF9800; }
-          .stat-card.mis-citas { border-left-color: #4CAF50; }
-          .stat-card.historiales { border-left-color: #607D8B; }
+          .stat-card.dispositivos { border-left-color: #2196F3; }
+          .stat-card.mensajes { border-left-color: #2196F3; }
+          .stat-card.citas { border-left-color: #2196F3; }
+          .stat-card.mis-citas { border-left-color: #2196F3; }
+          .stat-card.historiales { border-left-color: #2196F3; }
           
           .stat-number {
             font-size: 48px;
@@ -848,11 +871,10 @@ app.get('/dashboard', requireLogin, async (req, res) => {
         <div id="navbar-container"></div>
         
         <div class="dashboard-container">
-          <div class="welcome-section">
-            <h1>🏥 Bienvenido, ${user.nombre_usuario} <span class="user-badge">${user.tipo_usuario.toUpperCase()}</span></h1>
-            <p>Sistema de Gestión Hospitalaria - Panel de Control</p>
+                    <div class="welcome-section">
+            <h1 style="color: white;">🏥 Bienvenido, ${user.nombre_usuario} <span class="user-badge">${user.tipo_usuario.toUpperCase()}</span></h1>
+            <p style="color: white;">Sistema de Gestión Hospitalaria - Panel de Control</p>
           </div>
-          
           <div class="stats-grid">
             <div class="stat-card pacientes">
               <div class="stat-title">Pacientes Registrados</div>
@@ -1292,7 +1314,7 @@ app.get('/navbar', requireLogin, (req, res) => {
         <li><a href="/ver-dispositivos">🩺 Ver Dispositivos</a></li>
         <li><a href="/ver-citas">📅 Ver Citas</a></li>
         <li><a href="/ver-historiales">📋 Ver Historiales</a></li>
-        <li><a href="/horarios-medico">⏰ Horarios</a></li>
+        <li><a href="/horarios-medico">⏰ Gestionar Horarios</a></li>
         <li><a href="/agregar-paciente">➕ Agregar Paciente</a></li>
         <li><a href="/agregar-medicamento">➕ Agregar Medicamento</a></li>
         <li><a href="/agregar-dispositivo">➕ Agregar Dispositivo</a></li>
@@ -2596,7 +2618,7 @@ app.get('/ver-historiales', requireLogin, requireRole('medico', 'enfermero'), (r
       <body>
         <div id="navbar-container"></div>
         <div class="container">
-          <h1>📋 Historiales Clínicos</h1>
+                   <h1 style="color: black;">📋 Historiales Clínicos</h1>
           
           <div class="actions">
             <a href="/agregar-historial" class="action-btn historial">➕ Agregar Historial</a>
@@ -3467,7 +3489,7 @@ app.get('/ver-medicamentos', requireLogin, requireRole('medico', 'enfermero'), (
       <body>
         <div id="navbar-container"></div>
         <div class="container">
-          <h1>Medicamentos Registrados</h1>
+           <h1 style="color: black;"> Medicamentos Registrados</h1>
           <div class="search-container">
             <input type="text" id="buscar" placeholder="🔍 Buscar medicamento por nombre o función...">
           </div>
@@ -3707,7 +3729,7 @@ app.get('/ver-dispositivos', requireLogin, requireRole('medico', 'enfermero'), (
       <body>
         <div id="navbar-container"></div>
         <div class="container">
-          <h1>Dispositivos Médicos Registrados</h1>
+          <h1 style="color: black;"> Dispositivos Médicos Registrados</h1>
           <div class="search-container">
             <input type="text" id="buscar" placeholder="🔍 Buscar dispositivo por nombre, tipo o estado...">
           </div>
@@ -5445,7 +5467,7 @@ app.get('/ver-citas', requireLogin, (req, res) => {
         <body>
           <div id="navbar-container"></div>
           <div class="container">
-            <h1>📅 Citas Médicas Programadas</h1>
+            <h1 style="color: black;">📅 Mis Citas Programadas</h1>
             
             <div class="citas-grid" id="citas-container">
       `;
@@ -5645,36 +5667,443 @@ app.post('/api/citas/solicitar', requireLogin, requireRole('paciente'), async (r
   }
 });
 
-// ========== RUTAS FALTANTES SIMPLIFICADAS ==========
-app.get('/ver-citas-pendientes', requireLogin, requireRole('medico'), (req, res) => {
-  res.redirect('/ver-citas');
+// ========== GESTIÓN DE HORARIOS MÉDICO ==========
+// Ruta para gestionar horarios (versión completa)
+app.get('/horarios-medico', requireLogin, requireRole('medico'), (req, res) => {
+  const user = req.session.user;
+  
+  // Obtener los horarios existentes del médico
+  const query = `
+    SELECT * FROM horarios_medico 
+    WHERE medico_id = ? 
+    ORDER BY 
+      FIELD(dia_semana, 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'),
+      hora_inicio
+  `;
+  
+  db.query(query, [user.id], (err, horarios) => {
+    if (err) {
+      console.error('Error obteniendo horarios:', err);
+      return res.status(500).send('Error al cargar los horarios.');
+    }
+    
+    let horariosHtml = '';
+    if (horarios.length > 0) {
+      horarios.forEach(horario => {
+        const dia = horario.dia_semana;
+        const inicio = horario.hora_inicio.substring(0, 5); // Formato HH:MM
+        const fin = horario.hora_fin.substring(0, 5);
+        const disponible = horario.disponible ? 'Disponible' : 'No disponible';
+        const estadoColor = horario.disponible ? '#4CAF50' : '#F44336';
+        
+        horariosHtml += `
+          <tr>
+            <td>${dia}</td>
+            <td>${inicio}</td>
+            <td>${fin}</td>
+            <td><span style="color: ${estadoColor}; font-weight: bold;">${disponible}</span></td>
+            <td>
+              <button onclick="eliminarHorario(${horario.id})" class="delete-btn" style="padding: 8px 15px; font-size: 14px;">
+                🗑️ Eliminar
+              </button>
+            </td>
+          </tr>
+        `;
+      });
+    } else {
+      horariosHtml = `
+        <tr>
+          <td colspan="5" style="text-align: center; padding: 30px; color: #666;">
+            <p>📭 No hay horarios registrados.</p>
+            <p>Agrega tu primer horario para que los pacientes puedan solicitar citas.</p>
+          </td>
+        </tr>
+      `;
+    }
+    
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <link rel="stylesheet" href="/styles.css">
+        <title>Gestionar Horarios Médico</title>
+        <style>
+          .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+          .horarios-form, .horarios-list { 
+            background: white; 
+            padding: 30px; 
+            border-radius: 15px; 
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1); 
+            margin-bottom: 30px; 
+          }
+          .form-row { 
+            display: flex; 
+            gap: 20px; 
+            margin-bottom: 25px; 
+            flex-wrap: wrap; 
+            align-items: flex-end;
+          }
+          .form-group { flex: 1; min-width: 200px; }
+          label { display: block; margin-bottom: 10px; font-weight: bold; color: #333; }
+          input, select { 
+            width: 100%; 
+            padding: 12px 15px; 
+            border: 2px solid #ddd; 
+            border-radius: 8px; 
+            font-size: 16px; 
+            transition: border-color 0.3s;
+          }
+          input:focus, select:focus {
+            border-color: #4CAF50;
+            outline: none;
+          }
+          button { 
+            background: #4CAF50; 
+            color: white; 
+            padding: 12px 25px; 
+            border: none; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            font-size: 16px; 
+            font-weight: bold;
+            transition: background 0.3s;
+          }
+          button:hover { background: #45a049; }
+          table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            margin-top: 20px; 
+          }
+          th, td { 
+            padding: 15px; 
+            text-align: left; 
+            border-bottom: 1px solid #e0e0e0; 
+          }
+          th { 
+            background: #f5f5f5; 
+            font-weight: bold; 
+            color: #333;
+          }
+          .delete-btn { 
+            background: #f44336; 
+            color: white; 
+            padding: 10px 18px; 
+            border: none; 
+            border-radius: 6px; 
+            cursor: pointer; 
+            font-size: 14px;
+            transition: background 0.3s;
+          }
+          .delete-btn:hover { background: #d32f2f; }
+          .message { 
+            padding: 15px; 
+            border-radius: 8px; 
+            margin-bottom: 20px; 
+            display: none; 
+            font-weight: bold;
+          }
+          .success { background: #e6ffe6; color: #008000; border: 1px solid #b3e6b3; }
+          .error { background: #ffe6e6; color: #ff0000; border: 1px solid #ffb3b3; }
+          .info-box {
+            background: #e3f2fd;
+            border-left: 5px solid #2196F3;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 25px;
+          }
+          .action-buttons {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 25px;
+          }
+          .action-btn {
+            background: #2196F3;
+            color: white;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 16px;
+            display: inline-block;
+          }
+          .action-btn:hover {
+            background: #1976D2;
+          }
+          .action-btn.secondary {
+            background: #607D8B;
+          }
+          .action-btn.secondary:hover {
+            background: #455A64;
+          }
+          @media (max-width: 768px) {
+            .form-row {
+              flex-direction: column;
+            }
+            .form-group {
+              min-width: 100%;
+            }
+          }
+        </style>
+      </head>
+      <body>
+        <div id="navbar-container"></div>
+        <div class="container">
+          <h1>⏰ Gestionar Horarios de Atención</h1>
+          
+          <div class="info-box">
+            <h3 style="margin-top: 0;">📋 Información Importante</h3>
+            <p>Aquí puedes configurar tus horarios de atención para que los pacientes puedan solicitar citas.</p>
+            <p>• Los pacientes solo verán los horarios marcados como "Disponible".</p>
+            <p>• Asegúrate de no superponer horarios en el mismo día.</p>
+            <p>• Puedes tener múltiples horarios por día.</p>
+          </div>
+          
+          <div class="action-buttons">
+            <a href="/ver-citas" class="action-btn">📅 Ver Mis Citas</a>
+            <a href="/ver-citas-pendientes" class="action-btn secondary">⏳ Ver Citas Pendientes</a>
+          </div>
+          
+          <div id="message" class="message"></div>
+          
+          <div class="horarios-form">
+            <h2>➕ Agregar Nuevo Horario</h2>
+            <form id="agregarHorarioForm">
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="dia_semana">Día de la Semana</label>
+                  <select id="dia_semana" name="dia_semana" required>
+                    <option value="">Selecciona un día</option>
+                    <option value="Lunes">Lunes</option>
+                    <option value="Martes">Martes</option>
+                    <option value="Miércoles">Miércoles</option>
+                    <option value="Jueves">Jueves</option>
+                    <option value="Viernes">Viernes</option>
+                    <option value="Sábado">Sábado</option>
+                    <option value="Domingo">Domingo</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="hora_inicio">Hora de Inicio</label>
+                  <input type="time" id="hora_inicio" name="hora_inicio" required>
+                </div>
+                <div class="form-group">
+                  <label for="hora_fin">Hora de Fin</label>
+                  <input type="time" id="hora_fin" name="hora_fin" required>
+                </div>
+                <div class="form-group">
+                  <label for="disponible">Disponible para Citas</label>
+                  <select id="disponible" name="disponible" required>
+                    <option value="1">✅ Sí, disponible</option>
+                    <option value="0">❌ No disponible</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <button type="submit">➕ Agregar Horario</button>
+                </div>
+              </div>
+            </form>
+          </div>
+          
+          <div class="horarios-list">
+            <h2>📋 Mis Horarios de Atención</h2>
+            <div style="overflow-x: auto;">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Día</th>
+                    <th>Hora Inicio</th>
+                    <th>Hora Fin</th>
+                    <th>Disponibilidad</th>
+                    <th>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody id="horarios-table-body">
+                  ${horariosHtml}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          
+          <div style="text-align: center; margin-top: 30px;">
+            <a href="/dashboard" class="action-btn" style="background: #2196F3;">🏠 Volver al Inicio</a>
+          </div>
+        </div>
+        
+        <script>
+          fetch('/navbar')
+            .then(response => response.text())
+            .then(html => {
+              document.getElementById('navbar-container').innerHTML = html;
+            })
+            .catch(error => console.error('Error cargando navbar:', error));
+          
+          // Manejar el envío del formulario para agregar horario
+          document.getElementById('agregarHorarioForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = new FormData(e.target);
+            const data = Object.fromEntries(formData.entries());
+            
+            // Validar que la hora de fin sea posterior a la de inicio
+            if (data.hora_inicio >= data.hora_fin) {
+              showMessage('❌ La hora de fin debe ser posterior a la de inicio', 'error');
+              return;
+            }
+            
+            try {
+              const response = await fetch('/api/horarios/agregar', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+              });
+              
+              const result = await response.json();
+              
+              if (result.success) {
+                showMessage('✅ ' + result.message, 'success');
+                e.target.reset();
+                // Recargar la lista de horarios después de 1.5 segundos
+                setTimeout(() => location.reload(), 1500);
+              } else {
+                showMessage('❌ ' + result.error, 'error');
+              }
+            } catch (error) {
+              showMessage('❌ Error de conexión: ' + error.message, 'error');
+            }
+          });
+          
+          // Función para eliminar un horario
+          async function eliminarHorario(id) {
+            if (!confirm('¿Estás seguro de eliminar este horario?')) return;
+            
+            try {
+              const response = await fetch('/api/horarios/eliminar/' + id, {
+                method: 'POST'
+              });
+              
+              const result = await response.json();
+              
+              if (result.success) {
+                showMessage('✅ ' + result.message, 'success');
+                // Recargar la lista de horarios después de 1.5 segundos
+                setTimeout(() => location.reload(), 1500);
+              } else {
+                showMessage('❌ ' + result.error, 'error');
+              }
+            } catch (error) {
+              showMessage('❌ Error de conexión: ' + error.message, 'error');
+            }
+          }
+          
+          function showMessage(text, type) {
+            const messageDiv = document.getElementById('message');
+            messageDiv.textContent = text;
+            messageDiv.className = 'message ' + type;
+            messageDiv.style.display = 'block';
+            
+            // Ocultar el mensaje después de 5 segundos
+            setTimeout(() => {
+              messageDiv.style.display = 'none';
+            }, 5000);
+          }
+        </script>
+      </body>
+      </html>
+    `;
+    
+    res.send(html);
+  });
 });
 
-app.get('/horarios-medico', requireLogin, requireRole('medico'), (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <link rel="stylesheet" href="/styles.css">
-      <title>Horarios Médico</title>
-    </head>
-    <body>
-      <div id="navbar-container"></div>
-      <div class="container">
-        <h1>⏰ Horarios del Médico</h1>
-        <p>Esta funcionalidad está en desarrollo.</p>
-        <a href="/dashboard">← Volver al inicio</a>
-      </div>
-      <script>
-        fetch('/navbar')
-          .then(response => response.text())
-          .then(html => {
-            document.getElementById('navbar-container').innerHTML = html;
-          });
-      </script>
-    </body>
-    </html>
-  `);
+// ========== APIs PARA HORARIOS MÉDICO ==========
+app.post('/api/horarios/agregar', requireLogin, requireRole('medico'), (req, res) => {
+  const user = req.session.user;
+  const { dia_semana, hora_inicio, hora_fin, disponible } = req.body;
+  
+  if (!dia_semana || !hora_inicio || !hora_fin) {
+    return res.status(400).json({ success: false, error: 'Todos los campos son requeridos' });
+  }
+  
+  // Validar que la hora de fin sea posterior a la de inicio
+  if (hora_inicio >= hora_fin) {
+    return res.status(400).json({ success: false, error: 'La hora de fin debe ser posterior a la de inicio' });
+  }
+  
+  // Verificar si ya existe un horario en ese rango para el mismo día
+  const checkQuery = `
+    SELECT id FROM horarios_medico 
+    WHERE medico_id = ? 
+      AND dia_semana = ? 
+      AND (
+        (hora_inicio <= ? AND hora_fin >= ?) OR
+        (hora_inicio <= ? AND hora_fin >= ?) OR
+        (? <= hora_inicio AND ? >= hora_fin)
+      )
+  `;
+  
+  db.query(checkQuery, [user.id, dia_semana, hora_inicio, hora_inicio, hora_fin, hora_fin, hora_inicio, hora_fin], (err, results) => {
+    if (err) {
+      console.error('Error verificando horarios superpuestos:', err);
+      return res.status(500).json({ success: false, error: 'Error al verificar horarios' });
+    }
+    
+    if (results.length > 0) {
+      return res.status(400).json({ success: false, error: 'Ya tienes un horario en ese rango de tiempo para ese día' });
+    }
+    
+    const insertQuery = `
+      INSERT INTO horarios_medico (medico_id, dia_semana, hora_inicio, hora_fin, disponible)
+      VALUES (?, ?, ?, ?, ?)
+    `;
+    
+    db.query(insertQuery, [user.id, dia_semana, hora_inicio, hora_fin, disponible], (err, results) => {
+      if (err) {
+        console.error('Error agregando horario:', err);
+        return res.status(500).json({ success: false, error: 'Error al guardar el horario' });
+      }
+      
+      console.log(`✅ Horario agregado: Médico ${user.id}, ${dia_semana} ${hora_inicio}-${hora_fin}, Disponible: ${disponible}`);
+      
+      res.json({ 
+        success: true, 
+        message: 'Horario agregado correctamente',
+        horarioId: results.insertId 
+      });
+    });
+  });
+});
+
+// Eliminar horario
+app.post('/api/horarios/eliminar/:id', requireLogin, requireRole('medico'), (req, res) => {
+  const user = req.session.user;
+  const horarioId = req.params.id;
+  
+  // Verificar que el horario pertenece al médico
+  const query = 'DELETE FROM horarios_medico WHERE id = ? AND medico_id = ?';
+  
+  db.query(query, [horarioId, user.id], (err, results) => {
+    if (err) {
+      console.error('Error eliminando horario:', err);
+      return res.status(500).json({ success: false, error: 'Error al eliminar el horario' });
+    }
+    
+    if (results.affectedRows === 0) {
+      return res.status(404).json({ success: false, error: 'Horario no encontrado o no tienes permiso' });
+    }
+    
+    console.log(`✅ Horario eliminado: ID ${horarioId}, Médico ${user.id}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Horario eliminado correctamente' 
+    });
+  });
+});
+
+// Ruta simplificada para ver citas pendientes (redirige a ver-citas)
+app.get('/ver-citas-pendientes', requireLogin, requireRole('medico'), (req, res) => {
+  res.redirect('/ver-citas');
 });
 
 // ========== MANEJO DE ERRORES ==========
@@ -5716,16 +6145,23 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   const localIP = getLocalIP();
   console.log(`
 ======================================================
-   Servidor Hospitalario v2.0 - SISTEMA DE HISTORIALES CLÍNICOS
+   Servidor Hospitalario v2.0 - SISTEMA COMPLETO
 ========================================================
 
 Conexión MySQL establecida
 Tabla de mensajes creada/verificada
 Tabla de citas creada/verificada
 Tabla de historiales clínicos creada/verificada
-Sistema de historiales clínicos completo
-Sistema de mensajería para médicos y enfermeros
-Sistema de programación de citas completo
+Tabla de horarios médico creada/verificada
+
+SISTEMAS DISPONIBLES:
+• Sistema de historiales clínicos completo ✓
+• Sistema de mensajería para médicos y enfermeros ✓
+• Sistema de programación de citas completo ✓
+• Sistema de gestión de horarios médico ✓
+• Sistema de reportes Excel ✓
+• Sistema de archivos ✓
+
 Accesos disponibles:
 Local:          http://localhost:${PORT}
 Red local:      http://${localIP}:${PORT}
