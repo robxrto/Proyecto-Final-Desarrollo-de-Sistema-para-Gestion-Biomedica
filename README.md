@@ -210,19 +210,28 @@ INSERT IGNORE INTO codigos_acceso (codigo, tipo_usuario) VALUES
 ('ENF456', 'enfermero'),
 ('PAC789', 'paciente');
 
--- 12. Insertar medicamentos de ejemplo
-INSERT IGNORE INTO medicamentos (nombre, funcion) VALUES
-('Paracetamol', 'Analgésico y antipirético'),
-('Ibuprofeno', 'Antiinflamatorio'),
-('Amoxicilina', 'Antibiótico');
+-- 12. Tabla de historiales clínicos
+CREATE TABLE historiales_clinicos (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    paciente_id INT NOT NULL,
+    medico_id INT NOT NULL,
+    fecha_consulta DATE NOT NULL,
+    motivo_consulta TEXT NOT NULL,
+    diagnostico TEXT,
+    tratamiento TEXT,
+    medicamentos_prescritos TEXT,
+    observaciones TEXT,
+    fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP,
+    fecha_actualizacion DATETIME ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (paciente_id) REFERENCES pacientes(id) ON DELETE CASCADE,
+    FOREIGN KEY (medico_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+    INDEX idx_paciente (paciente_id),
+    INDEX idx_medico (medico_id),
+    INDEX idx_fecha_consulta (fecha_consulta)
+);
 
--- 13. Insertar dispositivos de ejemplo
-INSERT IGNORE INTO maquinas (nombre, tipo, estado) VALUES
-('Monitor de Signos', 'Monitorización', 'Disponible'),
-('Ventilador', 'Terapéutico', 'Disponible'),
-('Electrocardiógrafo', 'Diagnóstico', 'En uso');
 
--- 14. Crear índices para mejor rendimiento
+-- 13. Crear índices para mejor rendimiento
 CREATE INDEX idx_usuarios_tipo ON usuarios(tipo_usuario);
 CREATE INDEX idx_citas_estado ON citas(estado);
 CREATE INDEX idx_citas_medico ON citas(medico_id);
