@@ -8,7 +8,6 @@ const fs = require('fs');
 const multer = require('multer');
 const JSZip = require('jszip');
 const xlsx = require('xlsx');
-const mime = require('mime-types');
 const os = require('os');
 
 require('dotenv').config();
@@ -20,19 +19,19 @@ const db = mysql.createConnection({
   timezone: '-08:00'
 });
 
-// Habilitar transacciones
+// Conexión a MySQL
 db.connect((err) => {
   if (err) {
     console.error('❌ Error al conectar con MySQL:', err);
     process.exit(1);
   }
   console.log('✅ Conexión a MySQL establecida');
-  
-  // Crear tablas necesarias si no existen
   createMensajesTable();
+  createCitasTable();
+  createHistorialesTable(); // Agregada esta línea
 });
 
-// Función para crear tabla de mensajes si no existe
+// Crear tabla de mensajes si no existe
 function createMensajesTable() {
   const createTableQuery = `
     CREATE TABLE IF NOT EXISTS mensajes (
@@ -52,37 +51,84 @@ function createMensajesTable() {
   `;
   
   db.query(createTableQuery, (err) => {
-    if (err) {
-      console.error('❌ Error al crear tabla mensajes:', err.message);
-    } else {
-      console.log('✅ Tabla de mensajes verificada/creada correctamente');
-    }
+    if (err) console.error('❌ Error al crear tabla mensajes:', err.message);
+    else console.log('✅ Tabla de mensajes verificada/creada correctamente');
   });
 }
 
-const uploadDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
+// Crear tabla de citas si no existe
+function createCitasTable() {
+  const createTableQuery = `
+    CREATE TABLE IF NOT EXISTS citas (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      paciente_id INT NOT NULL,
+      medico_id INT NOT NULL,
+      fecha DATE NOT NULL,
+      hora TIME NOT NULL,
+      tipo_cita VARCHAR(100) NOT NULL,
+      motivo TEXT,
+      notas TEXT,
+      estado ENUM('pendiente', 'confirmada', 'completada', 'cancelada') DEFAULT 'pendiente',
+      fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP,
+      fecha_actualizacion DATETIME ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (paciente_id) REFERENCES pacientes(id),
+      FOREIGN KEY (medico_id) REFERENCES usuarios(id)
+    )
+  `;
+  
+  db.query(createTableQuery, (err) => {
+    if (err) console.error('❌ Error al crear tabla citas:', err.message);
+    else console.log('✅ Tabla de citas verificada/creada correctamente');
+  });
 }
+
+// Crear tabla de historiales clínicos si no existe
+function createHistorialesTable() {
+  const createTableQuery = `
+    CREATE TABLE IF NOT EXISTS historiales_clinicos (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      paciente_id INT NOT NULL,
+      medico_id INT NOT NULL,
+      fecha_consulta DATE NOT NULL,
+      motivo_consulta TEXT NOT NULL,
+      diagnostico TEXT,
+      tratamiento TEXT,
+      medicamentos_prescritos TEXT,
+      observaciones TEXT,
+      fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP,
+      fecha_actualizacion DATETIME ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (paciente_id) REFERENCES pacientes(id) ON DELETE CASCADE,
+      FOREIGN KEY (medico_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+      INDEX idx_paciente (paciente_id),
+      INDEX idx_medico (medico_id),
+      INDEX idx_fecha_consulta (fecha_consulta)
+    )
+  `;
+  
+  db.query(createTableQuery, (err) => {
+    if (err) console.error('❌ Error al crear tabla historiales_clinicos:', err.message);
+    else console.log('✅ Tabla de historiales clínicos verificada/creada correctamente');
+  });
+}
+
+// Configuración de uploads
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => {
-    cb(null, `${Date.now()}-${file.originalname}`);
-  }
+  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
 });
 
-// Función para crear un archivo Excel a partir de datos
+// Crear archivo Excel
 function crearExcel(nombreArchivo, datos, columnas) {
   const workbook = xlsx.utils.book_new();
   const worksheet = xlsx.utils.json_to_sheet(datos, { header: columnas });
   xlsx.utils.book_append_sheet(workbook, worksheet, 'Datos');
-  
-  const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-  return buffer;
+  return xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 }
 
-// Middlewares básicos - DEBEN IR PRIMERO
+// Middlewares
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(session({
@@ -92,41 +138,74 @@ app.use(session({
   cookie: { secure: false }
 }));
 
-// Debug middleware para ver todas las solicitudes
+// Debug middleware
 app.use((req, res, next) => {
   console.log(`[${new Date().toLocaleTimeString()}] ${req.method} ${req.url} - Sesión: ${req.session.user ? 'SÍ' : 'NO'} - Usuario: ${req.session.user?.nombre_usuario || 'N/A'} - Tipo: ${req.session.user?.tipo_usuario || 'N/A'}`);
   next();
 });
 
-// ========== RUTAS PÚBLICAS MANUALES ==========
-app.get('/', (req, res) => {
-  if (req.session.user) {
-    return res.redirect('/dashboard');
+// ========== MIDDLEWARES DE AUTENTICACIÓN ==========
+function requireLogin(req, res, next) {
+  if (!req.session.user) {
+    console.log('🔒 Acceso denegado a ruta protegida, redirigiendo a /login');
+    return res.redirect('/login');
   }
+  next();
+}
+
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.session.user) return res.redirect('/login');
+    if (roles.includes(req.session.user.tipo_usuario)) next();
+    else {
+      console.log(`❌ Acceso denegado para ${req.session.user.tipo_usuario} a ${req.path}`);
+      res.status(403).send(`
+        <!DOCTYPE html><html><head><title>403 - Acceso Denegado</title><link rel="stylesheet" href="/styles.css"></head>
+        <body><div class="container"><h1>403 - Acceso Denegado</h1><p>No tienes permiso para acceder a esta página.</p>
+        <p><strong>Usuario:</strong> ${req.session.user.nombre_usuario}</p><p><strong>Tipo:</strong> ${req.session.user.tipo_usuario}</p>
+        <p><strong>Ruta solicitada:</strong> ${req.path}</p><a href="/dashboard">Volver al inicio</a></div></body></html>
+      `);
+    }
+  };
+}
+
+function requireMedicoOrEnfermero(req, res, next) {
+  if (!req.session.user) return res.redirect('/login');
+  if (req.session.user.tipo_usuario === 'medico' || req.session.user.tipo_usuario === 'enfermero') next();
+  else {
+    console.log(`❌ Acceso denegado para paciente a mensajería: ${req.session.user.nombre_usuario}`);
+    res.status(403).send(`
+      <!DOCTYPE html><html><head><title>Acceso Restringido</title><link rel="stylesheet" href="/styles.css">
+      <style>.container{max-width:600px;margin:100px auto;padding:40px;background:white;border-radius:10px;box-shadow:0 0 20px rgba(0,0,0,0.1);text-align:center}
+      .icon{font-size:60px;margin-bottom:20px}</style></head><body><div class="container"><div class="icon">🚫</div>
+      <h1>Acceso Restringido</h1><p>El sistema de mensajería está disponible solo para médicos y enfermeros.</p>
+      <p><strong>Usuario:</strong> ${req.session.user.nombre_usuario} (Paciente)</p>
+      <p>Como paciente, puedes ver información general pero no acceder a la mensajería interna del personal médico.</p>
+      <a href="/dashboard" class="menu-btn">Volver al Dashboard</a></div></body></html>
+    `);
+  }
+}
+
+// ========== RUTAS PÚBLICAS ==========
+app.get('/', (req, res) => {
+  if (req.session.user) return res.redirect('/dashboard');
   res.sendFile(path.join(__dirname, 'public', 'welcome.html'));
 });
 
 app.get('/login', (req, res) => {
-  if (req.session.user) {
-    return res.redirect('/dashboard');
-  }
+  if (req.session.user) return res.redirect('/dashboard');
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
 app.get('/registrar', (req, res) => {
-  if (req.session.user) {
-    return res.redirect('/dashboard');
-  }
+  if (req.session.user) return res.redirect('/dashboard');
   res.sendFile(path.join(__dirname, 'public', 'registrar.html'));
 });
 
 // ========== REGISTRO ESPECÍFICO PARA PACIENTES ==========
 app.get('/registro-paciente', (req, res) => {
-  if (req.session.user) {
-    return res.redirect('/dashboard');
-  }
+  if (req.session.user) return res.redirect('/dashboard');
   
-  // Mostrar formulario HTML para registro de pacientes
   const html = `
     <!DOCTYPE html>
     <html>
@@ -264,7 +343,6 @@ app.get('/registro-paciente', (req, res) => {
           const formData = new FormData(this);
           const data = Object.fromEntries(formData.entries());
           
-          // Validaciones
           if (data.password !== data.confirm_password) {
             showMessage('Las contraseñas no coinciden', 'error');
             return;
@@ -305,7 +383,7 @@ app.get('/registro-paciente', (req, res) => {
         
         function showMessage(text, type) {
           const messageDiv = document.getElementById('message');
-          messageDiv.innerHTML = \`<div class="\${type}">\${text}</div>\`;
+          messageDiv.innerHTML = '<div class="' + type + '">' + text + '</div>';
         }
       </script>
     </body>
@@ -319,7 +397,6 @@ app.post('/registro-paciente', async (req, res) => {
   try {
     const { nombre_usuario, password, nombre, causa, codigo_paciente } = req.body;
 
-    // Validaciones
     if (!nombre_usuario || !password || !nombre || !causa) {
       return res.status(400).json({ 
         success: false, 
@@ -336,7 +413,6 @@ app.post('/registro-paciente', async (req, res) => {
 
     console.log('📍 Intento de registro de paciente:', nombre_usuario);
 
-    // Iniciar transacción
     db.beginTransaction(async (transactionErr) => {
       if (transactionErr) {
         console.error('Error al iniciar transacción:', transactionErr);
@@ -347,7 +423,6 @@ app.post('/registro-paciente', async (req, res) => {
       }
 
       try {
-        // 1. Verificar si el usuario ya existe
         const usuarioExistente = await new Promise((resolve, reject) => {
           db.query('SELECT id FROM usuarios WHERE nombre_usuario = ?', 
             [nombre_usuario], 
@@ -366,10 +441,8 @@ app.post('/registro-paciente', async (req, res) => {
           });
         }
 
-        // 2. Encriptar contraseña
         const hash = await bcrypt.hash(password, 10);
 
-        // 3. Insertar usuario con tipo 'paciente'
         const usuarioResult = await new Promise((resolve, reject) => {
           db.query(
             'INSERT INTO usuarios (nombre_usuario, password_hash, tipo_usuario) VALUES (?, ?, ?)',
@@ -384,7 +457,6 @@ app.post('/registro-paciente', async (req, res) => {
         const usuarioId = usuarioResult.insertId;
         console.log('📍 Usuario creado con ID:', usuarioId);
 
-        // 4. Insertar paciente con referencia al usuario
         await new Promise((resolve, reject) => {
           db.query(
             'INSERT INTO pacientes (nombre, causa, fecha_registro, usuario_id) VALUES (?, ?, NOW(), ?)',
@@ -398,7 +470,6 @@ app.post('/registro-paciente', async (req, res) => {
 
         console.log('📍 Paciente registrado:', nombre);
 
-        // 5. Confirmar transacción
         db.commit((commitErr) => {
           if (commitErr) {
             console.error('Error al confirmar transacción:', commitErr);
@@ -411,7 +482,7 @@ app.post('/registro-paciente', async (req, res) => {
 
           res.json({ 
             success: true, 
-            message: `Paciente ${nombre} registrado exitosamente. Ahora puedes iniciar sesión.`,
+            message: 'Paciente ' + nombre + ' registrado exitosamente. Ahora puedes iniciar sesión.',
             usuario: nombre_usuario
           });
         });
@@ -450,10 +521,6 @@ app.use('/uploads', express.static('uploads'));
 const upload = multer({
   storage: storage,
   fileFilter: (req, file, cb) => {
-    if (file.fieldname !== 'archivo') {
-      return cb(new Error('Campo inesperado detectado'), false);
-    }
-    
     const allowedTypes = [
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'application/vnd.ms-excel',
@@ -473,97 +540,7 @@ const upload = multer({
   }
 });
 
-// Middleware: requiere sesión iniciada
-function requireLogin(req, res, next) {
-  if (!req.session.user) {
-    console.log('🔒 Acceso denegado a ruta protegida, redirigiendo a /login');
-    return res.redirect('/login');
-  }
-  next();
-}
-
-// Middleware: verificar tipo de usuario
-function requireRole(...roles) {
-  return (req, res, next) => {
-    if (!req.session.user) {
-      return res.redirect('/login');
-    }
-    
-    if (roles.includes(req.session.user.tipo_usuario)) {
-      next();
-    } else {
-      console.log(`❌ Acceso denegado para ${req.session.user.tipo_usuario} a ${req.path}`);
-      res.status(403).send(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>403 - Acceso Denegado</title>
-          <link rel="stylesheet" href="/styles.css">
-        </head>
-        <body>
-          <div class="container">
-            <h1>403 - Acceso Denegado</h1>
-            <p>No tienes permiso para acceder a esta página.</p>
-            <p><strong>Usuario:</strong> ${req.session.user.nombre_usuario}</p>
-            <p><strong>Tipo:</strong> ${req.session.user.tipo_usuario}</p>
-            <p><strong>Ruta solicitada:</strong> ${req.path}</p>
-            <a href="/dashboard">Volver al inicio</a>
-          </div>
-        </body>
-        </html>
-      `);
-    }
-  };
-}
-
-// Middleware: solo para médicos y enfermeros (no pacientes)
-function requireMedicoOrEnfermero(req, res, next) {
-  if (!req.session.user) {
-    return res.redirect('/login');
-  }
-  
-  if (req.session.user.tipo_usuario === 'medico' || req.session.user.tipo_usuario === 'enfermero') {
-    next();
-  } else {
-    console.log(`❌ Acceso denegado para paciente a mensajería: ${req.session.user.nombre_usuario}`);
-    res.status(403).send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Acceso Restringido</title>
-        <link rel="stylesheet" href="/styles.css">
-        <style>
-          .container {
-            max-width: 600px;
-            margin: 100px auto;
-            padding: 40px;
-            background: white;
-            border-radius: 10px;
-            box-shadow: 0 0 20px rgba(0,0,0,0.1);
-            text-align: center;
-          }
-          .icon {
-            font-size: 60px;
-            margin-bottom: 20px;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="icon">🚫</div>
-          <h1>Acceso Restringido</h1>
-          <p>El sistema de mensajería está disponible solo para médicos y enfermeros.</p>
-          <p><strong>Usuario:</strong> ${req.session.user.nombre_usuario} (Paciente)</p>
-          <p>Como paciente, puedes ver información general pero no acceder a la mensajería interna del personal médico.</p>
-          <a href="/dashboard" class="menu-btn">Volver al Dashboard</a>
-        </div>
-      </body>
-      </html>
-    `);
-  }
-}
-
-// ========== RUTA PARA DEBUGGING DE BASE DE DATOS ==========
+// ========== DEBUGGING DE BASE DE DATOS ==========
 app.get('/debug/db-status', requireLogin, (req, res) => {
   db.query('SHOW TABLES', (err, tables) => {
     if (err) {
@@ -595,12 +572,11 @@ app.get('/debug/db-status', requireLogin, (req, res) => {
   });
 });
 
-// ========== RUTAS PROTEGIDAS ==========
+// ========== DASHBOARD COMPLETO ==========
 app.get('/dashboard', requireLogin, async (req, res) => {
   const user = req.session.user;
   
   try {
-    // Obtener ID de paciente si es paciente
     let pacienteId = null;
     if (user.tipo_usuario === 'paciente') {
       const pacienteResult = await new Promise((resolve, reject) => {
@@ -615,7 +591,6 @@ app.get('/dashboard', requireLogin, async (req, res) => {
       }
     }
     
-    // Obtener estadísticas para el dashboard
     const statsQuery = `
       SELECT 
         (SELECT COUNT(*) FROM pacientes) as total_pacientes,
@@ -623,10 +598,11 @@ app.get('/dashboard', requireLogin, async (req, res) => {
         (SELECT COUNT(*) FROM maquinas WHERE estado = 'Disponible') as total_dispositivos,
         (SELECT COUNT(*) FROM mensajes WHERE destinatario_id = ? AND leido = FALSE) as mensajes_no_leidos,
         (SELECT COUNT(*) FROM citas WHERE estado = 'pendiente') as citas_pendientes,
-        (SELECT COUNT(*) FROM citas WHERE paciente_id = ?) as mis_citas
+        (SELECT COUNT(*) FROM citas WHERE paciente_id = ?) as mis_citas,
+        (SELECT COUNT(*) FROM historiales_clinicos WHERE paciente_id = ?) as mis_historiales
     `;
     
-    const queryParams = user.tipo_usuario === 'paciente' ? [user.id, pacienteId || 0] : [user.id, 0];
+    const queryParams = user.tipo_usuario === 'paciente' ? [user.id, pacienteId || 0, pacienteId || 0] : [user.id, 0, 0];
     
     const statsResults = await new Promise((resolve, reject) => {
       db.query(statsQuery, queryParams, (err, results) => {
@@ -637,8 +613,8 @@ app.get('/dashboard', requireLogin, async (req, res) => {
     
     const stats = statsResults[0] || {};
     
-    // HTML dinámico del dashboard con cuadro de mensajería
-    const html = `
+    // HTML completo del dashboard
+    let html = `
       <!DOCTYPE html>
       <html lang="es">
       <head>
@@ -689,6 +665,7 @@ app.get('/dashboard', requireLogin, async (req, res) => {
           .stat-card.mensajes { border-left-color: #772da8ff; }
           .stat-card.citas { border-left-color: #FF9800; }
           .stat-card.mis-citas { border-left-color: #4CAF50; }
+          .stat-card.historiales { border-left-color: #607D8B; }
           
           .stat-number {
             font-size: 48px;
@@ -883,7 +860,10 @@ app.get('/dashboard', requireLogin, async (req, res) => {
               <div>Total en el sistema</div>
             </div>
             
-            ${user.tipo_usuario !== 'paciente' ? `
+    `;
+    
+    if (user.tipo_usuario !== 'paciente') {
+      html += `
             <div class="stat-card medicamentos">
               <div class="stat-title">Medicamentos en Inventario</div>
               <div class="stat-number">${stats.total_medicamentos || 0}</div>
@@ -895,31 +875,46 @@ app.get('/dashboard', requireLogin, async (req, res) => {
               <div class="stat-number">${stats.total_dispositivos || 0}</div>
               <div>Equipos médicos listos</div>
             </div>
-            ` : ''}
-            
-            ${user.tipo_usuario === 'paciente' ? `
+      `;
+    }
+    
+    if (user.tipo_usuario === 'paciente') {
+      html += `
             <div class="stat-card mis-citas">
               <div class="stat-title">Mis Citas Programadas</div>
               <div class="stat-number">${stats.mis_citas || 0}</div>
               <div>Total de mis citas</div>
             </div>
-            ` : ''}
             
-            ${user.tipo_usuario === 'medico' ? `
+            <div class="stat-card historiales">
+              <div class="stat-title">Registros en Mi Historial</div>
+              <div class="stat-number">${stats.mis_historiales || 0}</div>
+              <div>Consultas médicas</div>
+            </div>
+      `;
+    }
+    
+    if (user.tipo_usuario === 'medico') {
+      html += `
             <div class="stat-card citas">
               <div class="stat-title">Citas Pendientes</div>
               <div class="stat-number">${stats.citas_pendientes || 0}</div>
               <div>Por atender</div>
             </div>
-            ` : ''}
-            
-            ${user.tipo_usuario === 'medico' || user.tipo_usuario === 'enfermero' ? `
+      `;
+    }
+    
+    if (user.tipo_usuario === 'medico' || user.tipo_usuario === 'enfermero') {
+      html += `
             <div class="stat-card mensajes">
               <div class="stat-title">Mensajes Nuevos</div>
               <div class="stat-number">${stats.mensajes_no_leidos || 0}</div>
               <div>Por leer en mensajería</div>
             </div>
-            ` : ''}
+      `;
+    }
+    
+    html += `
           </div>
           
           <div class="modules-grid">
@@ -927,37 +922,82 @@ app.get('/dashboard', requireLogin, async (req, res) => {
               <h3>👥 Pacientes</h3>
               <ul class="module-list">
                 <li><a href="/ver-pacientes"><span class="icon">📋</span> Ver Pacientes Registrados</a></li>
-                ${user.tipo_usuario === 'medico' || user.tipo_usuario === 'enfermero' ? `
+    `;
+    
+    if (user.tipo_usuario === 'medico' || user.tipo_usuario === 'enfermero') {
+      html += `
                 <li><a href="/agregar-paciente"><span class="icon">➕</span> Agregar Nuevo Paciente</a></li>
                 <li><a href="/eliminar-paciente"><span class="icon">🗑️</span> Eliminar Paciente</a></li>
-                ` : ''}
+      `;
+    }
+    
+    html += `
               </ul>
             </div>
             
             <div class="module-card">
               <h3>📅 Citas Médicas</h3>
               <ul class="module-list">
-                ${user.tipo_usuario === 'paciente' ? `
+    `;
+    
+    if (user.tipo_usuario === 'paciente') {
+      html += `
                 <li><a href="/ver-mis-citas"><span class="icon">📋</span> Ver Mis Citas</a></li>
                 <li><a href="/solicitar-cita"><span class="icon">➕</span> Solicitar Nueva Cita</a></li>
-                ` : ''}
-                ${user.tipo_usuario === 'medico' ? `
+      `;
+    }
+    
+    if (user.tipo_usuario === 'medico') {
+      html += `
                 <li><a href="/ver-citas"><span class="icon">📋</span> Ver Todas las Citas</a></li>
                 <li><a href="/ver-citas-pendientes"><span class="icon">⏳</span> Ver Citas Pendientes</a></li>
                 <li><a href="/horarios-medico"><span class="icon">⏰</span> Gestionar Horarios</a></li>
-                ` : ''}
+      `;
+    }
+    
+    html += `
               </ul>
             </div>
             
-            ${user.tipo_usuario !== 'paciente' ? `
+            <div class="module-card">
+              <h3>📋 Historiales Clínicos</h3>
+              <ul class="module-list">
+    `;
+    
+    if (user.tipo_usuario === 'paciente') {
+      html += `
+                <li><a href="/ver-mi-historial"><span class="icon">📋</span> Ver Mi Historial Clínico</a></li>
+      `;
+    }
+    
+    if (user.tipo_usuario === 'medico' || user.tipo_usuario === 'enfermero') {
+      html += `
+                <li><a href="/ver-historiales"><span class="icon">📋</span> Ver Historiales Clínicos</a></li>
+                <li><a href="/agregar-historial"><span class="icon">➕</span> Agregar Historial</a></li>
+      `;
+    }
+    
+    html += `
+              </ul>
+            </div>
+    `;
+    
+    if (user.tipo_usuario !== 'paciente') {
+      html += `
             <div class="module-card">
               <h3>💊 Medicamentos</h3>
               <ul class="module-list">
                 <li><a href="/ver-medicamentos"><span class="icon">📦</span> Ver Medicamentos</a></li>
-                ${user.tipo_usuario === 'medico' ? `
+      `;
+      
+      if (user.tipo_usuario === 'medico') {
+        html += `
                 <li><a href="/agregar-medicamento"><span class="icon">➕</span> Agregar Medicamento</a></li>
                 <li><a href="/eliminar-medicamento"><span class="icon">🗑️</span> Eliminar Medicamento</a></li>
-                ` : ''}
+        `;
+      }
+      
+      html += `
               </ul>
             </div>
             
@@ -965,15 +1005,23 @@ app.get('/dashboard', requireLogin, async (req, res) => {
               <h3>🩺 Dispositivos Médicos</h3>
               <ul class="module-list">
                 <li><a href="/ver-dispositivos"><span class="icon">⚙️</span> Ver Dispositivos</a></li>
-                ${user.tipo_usuario === 'medico' ? `
+      `;
+      
+      if (user.tipo_usuario === 'medico') {
+        html += `
                 <li><a href="/agregar-dispositivo"><span class="icon">➕</span> Agregar Dispositivo</a></li>
                 <li><a href="/eliminar-dispositivo"><span class="icon">🗑️</span> Eliminar Dispositivo</a></li>
-                ` : ''}
+        `;
+      }
+      
+      html += `
               </ul>
             </div>
-            ` : ''}
-            
-            ${user.tipo_usuario === 'medico' || user.tipo_usuario === 'enfermero' ? `
+      `;
+    }
+    
+    if (user.tipo_usuario === 'medico' || user.tipo_usuario === 'enfermero') {
+      html += `
             <div class="module-card">
               <h3>📁 Archivos</h3>
               <ul class="module-list">
@@ -990,12 +1038,18 @@ app.get('/dashboard', requireLogin, async (req, res) => {
                 <li><a href="/descargar-excel-medicamentos"><span class="icon">💊</span> Excel de Medicamentos</a></li>
                 <li><a href="/descargar-excel-dispositivos"><span class="icon">🩺</span> Excel de Dispositivos</a></li>
                 <li><a href="/descargar-excel-citas"><span class="icon">📅</span> Excel de Citas</a></li>
+                <li><a href="/descargar-excel-historiales"><span class="icon">📋</span> Excel de Historiales</a></li>
               </ul>
             </div>
-            ` : ''}
+      `;
+    }
+    
+    html += `
           </div>
-          
-          ${user.tipo_usuario === 'medico' || user.tipo_usuario === 'enfermero' ? `
+    `;
+    
+    if (user.tipo_usuario === 'medico' || user.tipo_usuario === 'enfermero') {
+      html += `
           <div class="message-widget" id="message-widget">
             <div class="message-header">
               <h3>💬 Mensajería Interna</h3>
@@ -1014,11 +1068,64 @@ app.get('/dashboard', requireLogin, async (req, res) => {
               <a href="/mensajeria" class="btn-messaging">Ir a Mensajería Completa</a>
             </div>
           </div>
-          ` : ''}
+          
+          <script>
+            function loadRecentMessages() {
+              fetch('/api/mensajes/recientes')
+                .then(response => response.json())
+                .then(data => {
+                  const container = document.getElementById('recent-messages');
+                  
+                  if (data.mensajes && data.mensajes.length > 0) {
+                    let html = '';
+                    data.mensajes.forEach(msg => {
+                      const time = new Date(msg.fecha_envio).toLocaleTimeString('es-ES', {
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      });
+                      
+                      const date = new Date(msg.fecha_envio).toLocaleDateString('es-ES');
+                      
+                      html += '<div class="message-item ' + (msg.leido ? '' : 'unread') + '">' +
+                                '<div class="message-sender">' +
+                                  (msg.es_remitente ? '🟢 Tú' : '🔵 ' + msg.remitente_nombre) +
+                                  '<span style="float: right; font-size: 12px; font-weight: normal;">' +
+                                    date + ' ' + time +
+                                  '</span>' +
+                                '</div>' +
+                                '<div class="message-preview">' +
+                                  msg.mensaje.substring(0, 50) + (msg.mensaje.length > 50 ? '...' : '') +
+                                '</div>' +
+                                (!msg.leido && !msg.es_remitente ? '<div style="font-size: 10px; color: #2196F3; margin-top: 5px;">🆕 No leído</div>' : '') +
+                              '</div>';
+                    });
+                    
+                    container.innerHTML = html;
+                  } else {
+                    container.innerHTML = 
+                      '<div style="text-align: center; padding: 30px; color: #666;">' +
+                        '<p>No tienes mensajes todavía</p>' +
+                        '<p><small>¡Envía tu primer mensaje a un colega!</small></p>' +
+                      '</div>';
+                  }
+                })
+                .catch(error => {
+                  console.error('Error cargando mensajes:', error);
+                  document.getElementById('recent-messages').innerHTML = 
+                    '<div style="text-align: center; padding: 20px; color: #ff6b6b;">Error cargando mensajes</div>';
+                });
+            }
+            
+            loadRecentMessages();
+            setInterval(loadRecentMessages, 30000);
+          </script>
+      `;
+    }
+    
+    html += `
         </div>
         
         <script>
-          // Cargar navbar
           fetch('/navbar')
             .then(response => response.text())
             .then(html => {
@@ -1029,64 +1136,6 @@ app.get('/dashboard', requireLogin, async (req, res) => {
               document.getElementById('navbar-container').innerHTML = 
                 '<nav><ul><li><a href="/dashboard">🏠 Inicio</a></li><li><a href="/logout">🚪 Cerrar Sesión</a></li></ul></nav>';
             });
-          
-          ${user.tipo_usuario === 'medico' || user.tipo_usuario === 'enfermero' ? `
-          // Cargar mensajes recientes
-          function loadRecentMessages() {
-            fetch('/api/mensajes/recientes')
-              .then(response => response.json())
-              .then(data => {
-                const container = document.getElementById('recent-messages');
-                
-                if (data.mensajes && data.mensajes.length > 0) {
-                  let html = '';
-                  data.mensajes.forEach(msg => {
-                    const time = new Date(msg.fecha_envio).toLocaleTimeString('es-ES', {
-                      hour: '2-digit',
-                      minute: '2-digit'
-                    });
-                    
-                    const date = new Date(msg.fecha_envio).toLocaleDateString('es-ES');
-                    
-                    html += \`
-                      <div class="message-item \${msg.leido ? '' : 'unread'}">
-                        <div class="message-sender">
-                          \${msg.es_remitente ? '🟢 Tú' : '🔵 ' + msg.remitente_nombre}
-                          <span style="float: right; font-size: 12px; font-weight: normal;">
-                            \${date} \${time}
-                          </span>
-                        </div>
-                        <div class="message-preview">
-                          \${msg.mensaje.substring(0, 50)}\${msg.mensaje.length > 50 ? '...' : ''}
-                        </div>
-                        \${!msg.leido && !msg.es_remitente ? '<div style="font-size: 10px; color: #2196F3; margin-top: 5px;">🆕 No leído</div>' : ''}
-                      </div>
-                    \`;
-                  });
-                  
-                  container.innerHTML = html;
-                } else {
-                  container.innerHTML = \`
-                    <div style="text-align: center; padding: 30px; color: #666;">
-                      <p>No tienes mensajes todavía</p>
-                      <p><small>¡Envía tu primer mensaje a un colega!</small></p>
-                    </div>
-                  \`;
-                }
-              })
-              .catch(error => {
-                console.error('Error cargando mensajes:', error);
-                document.getElementById('recent-messages').innerHTML = 
-                  '<div style="text-align: center; padding: 20px; color: #ff6b6b;">Error cargando mensajes</div>';
-              });
-          }
-          
-          // Cargar mensajes al inicio
-          loadRecentMessages();
-          
-          // Actualizar mensajes cada 30 segundos
-          setInterval(loadRecentMessages, 30000);
-          ` : ''}
         </script>
       </body>
       </html>
@@ -1099,36 +1148,24 @@ app.get('/dashboard', requireLogin, async (req, res) => {
   }
 });
 
-// ========== RUTAS PARA CONTADORES ==========
+// ========== APIs UTILES ==========
 app.get('/api/contar-pacientes', requireLogin, (req, res) => {
   db.query('SELECT COUNT(*) as total FROM pacientes', (err, results) => {
-    if (err) {
-      console.error('❌ Error al contar pacientes:', err);
-      return res.status(500).json({ error: 'Error en la base de datos', details: err.message });
-    }
-    console.log(`📊 Total pacientes: ${results[0].total}`);
+    if (err) return res.status(500).json({ error: 'Error en la base de datos', details: err.message });
     res.json({ total: results[0].total });
   });
 });
 
 app.get('/api/contar-medicamentos', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
   db.query('SELECT COUNT(*) as total FROM medicamentos', (err, results) => {
-    if (err) {
-      console.error('❌ Error al contar medicamentos:', err);
-      return res.status(500).json({ error: 'Error en la base de datos', details: err.message });
-    }
-    console.log(`📊 Total medicamentos: ${results[0].total}`);
+    if (err) return res.status(500).json({ error: 'Error en la base de datos', details: err.message });
     res.json({ total: results[0].total });
   });
 });
 
 app.get('/api/contar-dispositivos', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
   db.query("SELECT COUNT(*) as total FROM maquinas WHERE estado = 'Disponible'", (err, results) => {
-    if (err) {
-      console.error('❌ Error al contar dispositivos:', err);
-      return res.status(500).json({ error: 'Error en la base de datos', details: err.message });
-    }
-    console.log(`📊 Total dispositivos disponibles: ${results[0].total}`);
+    if (err) return res.status(500).json({ error: 'Error en la base de datos', details: err.message });
     res.json({ total: results[0].total });
   });
 });
@@ -1154,19 +1191,14 @@ app.get('/logout', (req, res) => {
 // ========== AUTENTICACIÓN ==========
 app.post('/login', (req, res) => {
   const { nombre_usuario, password } = req.body;
-
-  if (!nombre_usuario || !password) {
-    return res.status(400).send('Usuario y contraseña son requeridos');
-  }
+  if (!nombre_usuario || !password) return res.status(400).send('Usuario y contraseña son requeridos');
 
   console.log('📍 Intento de login para usuario:', nombre_usuario);
-
   db.query('SELECT * FROM usuarios WHERE nombre_usuario = ?', [nombre_usuario], async (err, results) => {
     if (err) {
       console.error('Error en consulta:', err);
       return res.status(500).send('Error del servidor');
     }
-    
     if (results.length === 0) {
       console.log('📍 Usuario no encontrado:', nombre_usuario);
       return res.send('Usuario no encontrado');
@@ -1197,19 +1229,14 @@ app.post('/login', (req, res) => {
 
 app.post('/registrar', async (req, res) => {
   const { nombre_usuario, password, codigo_acceso } = req.body;
-
-  if (!nombre_usuario || !password || !codigo_acceso) {
-    return res.send('Todos los campos son requeridos');
-  }
+  if (!nombre_usuario || !password || !codigo_acceso) return res.send('Todos los campos son requeridos');
 
   console.log('📍 Intento de registro para usuario:', nombre_usuario);
-
   db.query('SELECT tipo_usuario FROM codigos_acceso WHERE codigo = ?', [codigo_acceso], async (err, results) => {
     if (err) {
       console.error('Error:', err);
       return res.send('Error en la base de datos');
     }
-    
     if (results.length === 0) {
       console.log('📍 Código de acceso inválido:', codigo_acceso);
       return res.send('Código de acceso inválido');
@@ -1217,14 +1244,10 @@ app.post('/registrar', async (req, res) => {
 
     const tipo_usuario = results[0].tipo_usuario;
     console.log('📍 Tipo de usuario asignado:', tipo_usuario);
-    
     try {
       const hash = await bcrypt.hash(password, 10);
-      
-      db.query(
-        'INSERT INTO usuarios (nombre_usuario, password_hash, tipo_usuario) VALUES (?, ?, ?)',
-        [nombre_usuario, hash, tipo_usuario],
-        (err) => {
+      db.query('INSERT INTO usuarios (nombre_usuario, password_hash, tipo_usuario) VALUES (?, ?, ?)',
+        [nombre_usuario, hash, tipo_usuario], (err) => {
           if (err) {
             console.error('Error al registrar:', err);
             return res.send('Error al registrar usuario (¿usuario ya existe?)');
@@ -1242,103 +1265,70 @@ app.post('/registrar', async (req, res) => {
 
 // ========== NAVBAR DINÁMICO ==========
 app.get('/navbar', requireLogin, (req, res) => {
-  console.log(`🔗 Cargando navbar para: ${req.session.user.nombre_usuario} (${req.session.user.tipo_usuario})`);
-  
   const tipo = req.session.user.tipo_usuario;
+  const userId = req.session.user.id;
   
-  // Obtener contador de mensajes no leídos (solo para médicos y enfermeros)
-  if (tipo === 'medico' || tipo === 'enfermero') {
-    db.query('SELECT COUNT(*) as count FROM mensajes WHERE destinatario_id = ? AND leido = FALSE', 
-      [req.session.user.id], (err, countResults) => {
-        if (err) {
-          console.error('Error obteniendo contador de mensajes:', err);
-        }
-        
-        const unreadCount = countResults[0]?.count || 0;
-        let badge = '';
-        if (unreadCount > 0) {
-          badge = `<span id="message-badge" style="background: red; color: white; border-radius: 50%; padding: 2px 6px; font-size: 12px; margin-left: 5px;">${unreadCount}</span>`;
-        }
+  const getUnreadCount = (callback) => {
+    if (tipo === 'medico' || tipo === 'enfermero') {
+      db.query('SELECT COUNT(*) as count FROM mensajes WHERE destinatario_id = ? AND leido = FALSE', 
+        [userId], (err, countResults) => {
+          callback(err ? 0 : countResults[0]?.count || 0);
+        });
+    } else {
+      callback(0);
+    }
+  };
 
-        let menu = `
-          <nav>
-            <ul>
-              <li><a href="/dashboard">🏠 Inicio</a></li>
-        `;
-
-        // Solo médicos y enfermeros ven el enlace de mensajería
-        if (tipo === 'medico' || tipo === 'enfermero') {
-          menu += `<li><a href="/mensajeria">💬 Mensajes ${badge}</a></li>`;
-        }
-
-        if (tipo === 'medico') {
-          menu += `
-            <li><a href="/ver-pacientes">👥 Ver Pacientes</a></li>
-            <li><a href="/ver-medicamentos">💊 Ver Medicamentos</a></li>
-            <li><a href="/ver-dispositivos">🩺 Ver Dispositivos</a></li>
-            <li><a href="/ver-citas">📅 Ver Citas</a></li>
-            <li><a href="/horarios-medico">⏰ Horarios</a></li>
-            <li><a href="/agregar-paciente">➕ Agregar Paciente</a></li>
-            <li><a href="/agregar-medicamento">➕ Agregar Medicamento</a></li>
-            <li><a href="/agregar-dispositivo">➕ Agregar Dispositivo</a></li>
-            <li><a href="/eliminar-paciente">🗑️ Eliminar Paciente</a></li>
-            <li><a href="/eliminar-medicamento">🗑️ Eliminar Medicamento</a></li>
-            <li><a href="/eliminar-dispositivo">🗑️ Eliminar Dispositivo</a></li>
-            <li><a href="/subir-archivo">📤 Subir Archivos</a></li>
-            <li><a href="/descargar-archivos">📥 Descargar archivos</a></li>
-            <li><a href="/descargar-excel">📊 Descargar Excel</a></li>
-          `;
-        } else if (tipo === 'enfermero') {
-          menu += `
-            <li><a href="/ver-pacientes">👥 Ver Pacientes</a></li>
-            <li><a href="/ver-medicamentos">💊 Ver Medicamentos</a></li>
-            <li><a href="/ver-dispositivos">🩺 Ver Dispositivos</a></li>
-            <li><a href="/agregar-paciente">➕ Agregar Paciente</a></li>
-            <li><a href="/eliminar-paciente">🗑️ Eliminar Paciente</a></li>
-            <li><a href="/subir-archivo">📤 Subir Archivos</a></li>
-            <li><a href="/descargar-archivos">📥 Descargar archivos</a></li>
-            <li><a href="/descargar-excel">📊 Descargar Excel</a></li>
-          `;
-        } else if (tipo === 'paciente') {
-          menu += `
-            <li><a href="/ver-pacientes">👥 Ver Otros Pacientes</a></li>
-            <li><a href="/ver-mis-citas">📅 Ver Mis Citas</a></li>
-            <li><a href="/solicitar-cita">➕ Solicitar Cita</a></li>
-          `;
-        }
-
-        menu += `
-              <li><a href="/logout">🚪 Cerrar Sesión</a></li>
-            </ul>
-          </nav>
-        `;
-
-        res.send(menu);
-      });
-  } else {
-    // Para pacientes, no consultamos mensajes
-    let menu = `
-      <nav>
-        <ul>
-          <li><a href="/dashboard">🏠 Inicio</a></li>
-    `;
-
-    if (tipo === 'paciente') {
+  getUnreadCount((unreadCount) => {
+    let badge = unreadCount > 0 ? `<span id="message-badge" style="background: red; color: white; border-radius: 50%; padding: 2px 6px; font-size: 12px; margin-left: 5px;">${unreadCount}</span>` : '';
+    
+    let menu = `<nav><ul><li><a href="/dashboard">🏠 Inicio</a></li>`;
+    if (tipo === 'medico' || tipo === 'enfermero') menu += `<li><a href="/mensajeria">💬 Mensajes ${badge}</a></li>`;
+    
+    if (tipo === 'medico') {
+      menu += `
+        <li><a href="/ver-pacientes">👥 Ver Pacientes</a></li>
+        <li><a href="/ver-medicamentos">💊 Ver Medicamentos</a></li>
+        <li><a href="/ver-dispositivos">🩺 Ver Dispositivos</a></li>
+        <li><a href="/ver-citas">📅 Ver Citas</a></li>
+        <li><a href="/ver-historiales">📋 Ver Historiales</a></li>
+        <li><a href="/horarios-medico">⏰ Horarios</a></li>
+        <li><a href="/agregar-paciente">➕ Agregar Paciente</a></li>
+        <li><a href="/agregar-medicamento">➕ Agregar Medicamento</a></li>
+        <li><a href="/agregar-dispositivo">➕ Agregar Dispositivo</a></li>
+        <li><a href="/agregar-historial">➕ Agregar Historial</a></li>
+        <li><a href="/eliminar-paciente">🗑️ Eliminar Paciente</a></li>
+        <li><a href="/eliminar-medicamento">🗑️ Eliminar Medicamento</a></li>
+        <li><a href="/eliminar-dispositivo">🗑️ Eliminar Dispositivo</a></li>
+        <li><a href="/subir-archivo">📤 Subir Archivos</a></li>
+        <li><a href="/descargar-archivos">📥 Descargar archivos</a></li>
+        <li><a href="/descargar-excel">📊 Descargar Excel</a></li>
+      `;
+    } else if (tipo === 'enfermero') {
+      menu += `
+        <li><a href="/ver-pacientes">👥 Ver Pacientes</a></li>
+        <li><a href="/ver-medicamentos">💊 Ver Medicamentos</a></li>
+        <li><a href="/ver-dispositivos">🩺 Ver Dispositivos</a></li>
+        <li><a href="/ver-historiales">📋 Ver Historiales</a></li>
+        <li><a href="/agregar-paciente">➕ Agregar Paciente</a></li>
+        <li><a href="/agregar-historial">➕ Agregar Historial</a></li>
+        <li><a href="/eliminar-paciente">🗑️ Eliminar Paciente</a></li>
+        <li><a href="/subir-archivo">📤 Subir Archivos</a></li>
+        <li><a href="/descargar-archivos">📥 Descargar archivos</a></li>
+        <li><a href="/descargar-excel">📊 Descargar Excel</a></li>
+      `;
+    } else if (tipo === 'paciente') {
       menu += `
         <li><a href="/ver-pacientes">👥 Ver Otros Pacientes</a></li>
         <li><a href="/ver-mis-citas">📅 Ver Mis Citas</a></li>
+        <li><a href="/ver-mi-historial">📋 Ver Mi Historial</a></li>
         <li><a href="/solicitar-cita">➕ Solicitar Cita</a></li>
       `;
     }
-
-    menu += `
-          <li><a href="/logout">🚪 Cerrar Sesión</a></li>
-        </ul>
-      </nav>
-    `;
-
+    
+    menu += `<li><a href="/logout">🚪 Cerrar Sesión</a></li></ul></nav>`;
     res.send(menu);
-  }
+  });
 });
 
 // ========== RUTAS DE ARCHIVOS ==========
@@ -1357,56 +1347,20 @@ app.get('/descargar-archivos', requireLogin, requireRole('medico', 'enfermero'),
   res.sendFile(path.join(__dirname, 'public', 'descargar-archivos.html'));
 });
 
-app.get('/equipos', requireLogin, (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'equipos.html'));
-});
-
 app.post('/upload', requireLogin, requireRole('medico', 'enfermero'), upload.single('archivo'), (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No se subió ningún archivo' });
-    }
-
-    const usuario = req.session.user.nombre_usuario || "admin";
-    
-    db.query(
-      'INSERT INTO archivos_subidos (nombre_archivo, tipo, usuario, ruta) VALUES (?, ?, ?, ?)',
-      [req.file.originalname, req.file.mimetype, usuario, req.file.path],
-      (error, results) => {
-        if (error) {
-          console.error("Error al guardar en BD:", error);
-          return res.status(500).json({ error: "Error en base de datos" });
-        }
-
-        const esExcel = [
-          'application/vnd.ms-excel',
-          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        ].includes(req.file.mimetype);
-        
-        if (esExcel) {
-          try {
-            const workbook = xlsx.readFile(req.file.path);
-            const sheetName = workbook.SheetNames[0];
-            const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
-            console.log("Datos Excel procesados:", data.length, "registros");
-          } catch (excelError) {
-            console.error("Error procesando Excel:", excelError);
-          }
-        }
-
-        res.json({ 
-          success: true, 
-          message: 'Archivo subido y registrado correctamente',
-          archivo: req.file.originalname 
-        });
+  if (!req.file) return res.status(400).json({ error: 'No se subió ningún archivo' });
+  const usuario = req.session.user.nombre_usuario || "admin";
+  
+  db.query('INSERT INTO archivos_subidos (nombre_archivo, tipo, usuario, ruta) VALUES (?, ?, ?, ?)',
+    [req.file.originalname, req.file.mimetype, usuario, req.file.path],
+    (error) => {
+      if (error) {
+        console.error("Error al guardar en BD:", error);
+        return res.status(500).json({ error: "Error en base de datos" });
       }
-    );
-  } catch (error) {
-    res.status(500).json({
-      error: 'Error al subir archivo',
-      details: error.message
-    });
-  }
+      res.json({ success: true, message: 'Archivo subido y registrado correctamente', archivo: req.file.originalname });
+    }
+  );
 });
 
 app.get('/generar-zip', requireLogin, requireRole('medico', 'enfermero'), async (req, res) => {
@@ -1447,8 +1401,6 @@ app.get('/generar-zip', requireLogin, requireRole('medico', 'enfermero'), async 
 });
 
 // ========== RUTAS PARA DESCARGAR EXCEL ==========
-
-// Ruta para descargar Excel de pacientes
 app.get('/descargar-excel-pacientes', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
   db.query('SELECT * FROM pacientes ORDER BY id', (err, results) => {
     if (err) {
@@ -1481,7 +1433,6 @@ app.get('/descargar-excel-pacientes', requireLogin, requireRole('medico', 'enfer
   });
 });
 
-// Ruta para descargar Excel de medicamentos
 app.get('/descargar-excel-medicamentos', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
   db.query('SELECT * FROM medicamentos ORDER BY id', (err, results) => {
     if (err) {
@@ -1512,7 +1463,6 @@ app.get('/descargar-excel-medicamentos', requireLogin, requireRole('medico', 'en
   });
 });
 
-// Ruta para descargar Excel de dispositivos médicos
 app.get('/descargar-excel-dispositivos', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
   db.query('SELECT * FROM maquinas ORDER BY id', (err, results) => {
     if (err) {
@@ -1544,7 +1494,6 @@ app.get('/descargar-excel-dispositivos', requireLogin, requireRole('medico', 'en
   });
 });
 
-// Ruta para descargar Excel de citas
 app.get('/descargar-excel-citas', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
   const query = `
     SELECT 
@@ -1598,24 +1547,73 @@ app.get('/descargar-excel-citas', requireLogin, requireRole('medico', 'enfermero
   });
 });
 
-// Ruta para descargar todos los Excel en un ZIP
+app.get('/descargar-excel-historiales', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
+  const query = `
+    SELECT 
+      hc.id,
+      p.nombre as paciente_nombre,
+      u.nombre_usuario as medico_nombre,
+      hc.fecha_consulta,
+      hc.motivo_consulta,
+      hc.diagnostico,
+      hc.tratamiento,
+      hc.medicamentos_prescritos,
+      hc.fecha_creacion
+    FROM historiales_clinicos hc
+    LEFT JOIN pacientes p ON hc.paciente_id = p.id
+    LEFT JOIN usuarios u ON hc.medico_id = u.id
+    ORDER BY hc.fecha_consulta DESC
+  `;
+  
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('❌ Error al obtener historiales para Excel:', err);
+      return res.status(500).json({ error: 'Error en la base de datos' });
+    }
+
+    if (results.length === 0) {
+      return res.status(404).send('No hay historiales clínicos registrados');
+    }
+
+    try {
+      const datos = results.map(h => ({
+        ID: h.id,
+        Paciente: h.paciente_nombre,
+        Médico: h.medico_nombre,
+        'Fecha Consulta': new Date(h.fecha_consulta).toLocaleDateString('es-ES'),
+        'Motivo Consulta': h.motivo_consulta,
+        Diagnóstico: h.diagnostico || 'No especificado',
+        Tratamiento: h.tratamiento || 'No especificado',
+        'Medicamentos Prescritos': h.medicamentos_prescritos || 'No especificado',
+        'Fecha Creación': new Date(h.fecha_creacion).toLocaleDateString('es-ES')
+      }));
+
+      const buffer = crearExcel('historiales_clinicos', datos, ['ID', 'Paciente', 'Médico', 'Fecha Consulta', 'Motivo Consulta', 'Diagnóstico', 'Tratamiento', 'Medicamentos Prescritos', 'Fecha Creación']);
+      
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', 'attachment; filename=historiales_clinicos.xlsx');
+      res.send(buffer);
+    } catch (error) {
+      console.error('❌ Error al generar Excel:', error);
+      res.status(500).send('Error al generar archivo Excel');
+    }
+  });
+});
+
 app.get('/descargar-todos-excel', requireLogin, requireRole('medico', 'enfermero'), async (req, res) => {
   try {
     const zip = new JSZip();
     
-    // Función para agregar datos al ZIP
     const agregarAlZip = (nombreTabla, query, callback) => {
       return new Promise((resolve, reject) => {
         db.query(query, (err, results) => {
           if (err) return reject(err);
-          
           callback(results);
           resolve();
         });
       });
     };
     
-    // Agregar pacientes
     await agregarAlZip('pacientes', 'SELECT * FROM pacientes ORDER BY id', (results) => {
       if (results.length > 0) {
         const datos = results.map(p => ({
@@ -1630,12 +1628,10 @@ app.get('/descargar-todos-excel', requireLogin, requireRole('medico', 'enfermero
         const worksheet = xlsx.utils.json_to_sheet(datos);
         xlsx.utils.book_append_sheet(workbook, worksheet, 'Datos');
         const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-        
         zip.file('pacientes.xlsx', buffer);
       }
     });
     
-    // Agregar medicamentos
     await agregarAlZip('medicamentos', 'SELECT * FROM medicamentos ORDER BY id', (results) => {
       if (results.length > 0) {
         const datos = results.map(m => ({
@@ -1648,12 +1644,10 @@ app.get('/descargar-todos-excel', requireLogin, requireRole('medico', 'enfermero
         const worksheet = xlsx.utils.json_to_sheet(datos);
         xlsx.utils.book_append_sheet(workbook, worksheet, 'Datos');
         const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-        
         zip.file('medicamentos.xlsx', buffer);
       }
     });
     
-    // Agregar dispositivos
     await agregarAlZip('maquinas', 'SELECT * FROM maquinas ORDER BY id', (results) => {
       if (results.length > 0) {
         const datos = results.map(d => ({
@@ -1667,12 +1661,10 @@ app.get('/descargar-todos-excel', requireLogin, requireRole('medico', 'enfermero
         const worksheet = xlsx.utils.json_to_sheet(datos);
         xlsx.utils.book_append_sheet(workbook, worksheet, 'Datos');
         const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-        
         zip.file('dispositivos_medicos.xlsx', buffer);
       }
     });
     
-    // Agregar citas
     const citasQuery = `
       SELECT 
         c.id,
@@ -1708,12 +1700,49 @@ app.get('/descargar-todos-excel', requireLogin, requireRole('medico', 'enfermero
         const worksheet = xlsx.utils.json_to_sheet(datos);
         xlsx.utils.book_append_sheet(workbook, worksheet, 'Datos');
         const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-        
         zip.file('citas.xlsx', buffer);
       }
     });
     
-    // Generar el ZIP
+    const historialesQuery = `
+      SELECT 
+        hc.id,
+        p.nombre as paciente_nombre,
+        u.nombre_usuario as medico_nombre,
+        hc.fecha_consulta,
+        hc.motivo_consulta,
+        hc.diagnostico,
+        hc.tratamiento,
+        hc.medicamentos_prescritos,
+        hc.fecha_creacion
+      FROM historiales_clinicos hc
+      LEFT JOIN pacientes p ON hc.paciente_id = p.id
+      LEFT JOIN usuarios u ON hc.medico_id = u.id
+      ORDER BY hc.fecha_consulta DESC
+    `;
+    
+    await agregarAlZip('historiales_clinicos', historialesQuery, (results) => {
+      if (results.length > 0) {
+        const datos = results.map(h => ({
+          ID: h.id,
+          Paciente: h.paciente_nombre,
+          Médico: h.medico_nombre,
+          'Fecha Consulta': new Date(h.fecha_consulta).toLocaleDateString('es-ES'),
+          'Motivo Consulta': h.motivo_consulta,
+          Diagnóstico: h.diagnostico || 'No especificado',
+          Tratamiento: h.tratamiento || 'No especificado',
+          'Medicamentos Prescritos': h.medicamentos_prescritos || 'No especificado',
+          'Fecha Creación': new Date(h.fecha_creacion).toLocaleDateString('es-ES')
+        }));
+        
+        const workbook = xlsx.utils.book_new();
+        const worksheet = xlsx.utils.json_to_sheet(datos);
+        xlsx.utils.book_append_sheet(workbook, worksheet, 'Datos');
+        const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+        zip.file('historiales_clinicos.xlsx', buffer);
+      }
+    });
+    
     const zipData = await zip.generateAsync({ type: 'nodebuffer' });
     
     res.setHeader('Content-Type', 'application/zip');
@@ -1726,7 +1755,6 @@ app.get('/descargar-todos-excel', requireLogin, requireRole('medico', 'enfermero
   }
 });
 
-// Ruta para la página de descarga de Excel
 app.get('/descargar-excel', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
   const html = `
     <!DOCTYPE html>
@@ -1795,13 +1823,15 @@ app.get('/descargar-excel', requireLogin, requireRole('medico', 'enfermero'), (r
         .download-btn.dispositivos:hover { background: #8e44ad; }
         .download-btn.citas { background: #FF9800; }
         .download-btn.citas:hover { background: #F57C00; }
+        .download-btn.historiales { background: #607D8B; }
+        .download-btn.historiales:hover { background: #455A64; }
         .download-btn.todos { 
-          background: linear-gradient(135deg, #2ecc71, #3498db, #9b59b6, #FF9800);
+          background: linear-gradient(135deg, #2ecc71, #3498db, #9b59b6, #FF9800, #607D8B);
           font-weight: bold;
           margin-top: 20px;
         }
         .download-btn.todos:hover { 
-          background: linear-gradient(135deg, #27ae60, #2980b9, #8e44ad, #F57C00);
+          background: linear-gradient(135deg, #27ae60, #2980b9, #8e44ad, #F57C00, #455A64);
         }
         .stats {
           background: #f8f9fa;
@@ -1868,6 +1898,14 @@ app.get('/descargar-excel', requireLogin, requireRole('medico', 'enfermero'), (r
               📥 Descargar Excel
             </a>
           </div>
+          
+          <div class="download-card">
+            <h3>📋 Historiales Clínicos</h3>
+            <p>Registros médicos de pacientes</p>
+            <a href="/descargar-excel-historiales" class="download-btn historiales">
+              📥 Descargar Excel
+            </a>
+          </div>
         </div>
         
         <div style="text-align: center; margin-top: 40px;">
@@ -1884,7 +1922,6 @@ app.get('/descargar-excel', requireLogin, requireRole('medico', 'enfermero'), (r
       </div>
       
       <script>
-        // Cargar navbar
         fetch('/navbar')
           .then(response => response.text())
           .then(html => {
@@ -1901,7 +1938,7 @@ app.get('/descargar-excel', requireLogin, requireRole('medico', 'enfermero'), (r
 
 // ========== RUTAS DE PACIENTES ==========
 app.get('/ver-pacientes', requireLogin, (req, res) => {
-  console.log(`👥 Acceso a /ver-pacientes por: ${req.session.user.nombre_usuario} (${req.session.user.tipo_usuario})`);
+  console.log('👥 Acceso a /ver-pacientes por: ' + req.session.user.nombre_usuario + ' (' + req.session.user.tipo_usuario + ')');
   
   db.query('SELECT * FROM pacientes', (err, results) => {
     if (err) {
@@ -1917,12 +1954,32 @@ app.get('/ver-pacientes', requireLogin, (req, res) => {
         <title>Pacientes</title>
         <style>
           .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+          .actions { display: flex; gap: 10px; margin-bottom: 20px; }
+          .action-btn { 
+            background: #4CAF50; 
+            color: white; 
+            padding: 10px 20px; 
+            border: none; 
+            border-radius: 5px; 
+            cursor: pointer; 
+            text-decoration: none; 
+            display: inline-block;
+          }
+          .action-btn:hover { background: #45a049; }
+          .action-btn.historial { background: #607D8B; }
+          .action-btn.historial:hover { background: #455A64; }
         </style>
       </head>
       <body>
         <div id="navbar-container"></div>
         <div class="container">
           <h1>Pacientes Registrados</h1>
+          ${req.session.user.tipo_usuario === 'medico' || req.session.user.tipo_usuario === 'enfermero' ? `
+          <div class="actions">
+            <a href="/agregar-paciente" class="action-btn">➕ Agregar Paciente</a>
+            <a href="/agregar-historial" class="action-btn historial">📋 Agregar Historial</a>
+          </div>
+          ` : ''}
           <div class="search-container">
             <input type="text" id="buscar" placeholder="🔍 Buscar paciente por nombre, causa o ID...">
           </div>
@@ -1933,6 +1990,7 @@ app.get('/ver-pacientes', requireLogin, (req, res) => {
                 <th>Nombre</th>
                 <th>Causa</th>
                 <th>Fecha de Registro</th>
+                ${req.session.user.tipo_usuario === 'medico' || req.session.user.tipo_usuario === 'enfermero' ? '<th>Acciones</th>' : ''}
               </tr>
             </thead>
             <tbody>
@@ -1952,6 +2010,13 @@ app.get('/ver-pacientes', requireLogin, (req, res) => {
                   hour: '2-digit',
                   minute: '2-digit'
                 })}</td>
+                ${req.session.user.tipo_usuario === 'medico' || req.session.user.tipo_usuario === 'enfermero' ? `
+                <td>
+                  <a href="/ver-historial-paciente/${p.id}" class="action-btn historial" style="padding: 5px 10px; font-size: 14px;">
+                    📋 Historial
+                  </a>
+                </td>
+                ` : ''}
               </tr>
       `;
     });
@@ -1966,7 +2031,6 @@ app.get('/ver-pacientes', requireLogin, (req, res) => {
           </div>
         </div>
         <script>
-          // Cargar navbar con manejo de errores
           fetch('/navbar')
             .then(response => {
               if (!response.ok) {
@@ -1979,7 +2043,6 @@ app.get('/ver-pacientes', requireLogin, (req, res) => {
             })
             .catch(error => {
               console.error('Error cargando navbar:', error);
-              // Mostrar navbar básico si falla
               document.getElementById('navbar-container').innerHTML = 
                 '<nav><ul><li><a href="/dashboard">🏠 Inicio</a></li><li><a href="/logout">🚪 Cerrar Sesión</a></li></ul></nav>';
             });
@@ -2001,6 +2064,1207 @@ app.get('/ver-pacientes', requireLogin, (req, res) => {
   });
 });
 
+// ========== HISTORIALES CLÍNICOS ==========
+
+// Ver historial clínico de un paciente (para médicos y enfermeros)
+app.get('/ver-historial-paciente/:pacienteId', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
+  const pacienteId = req.params.pacienteId;
+  
+  const query = `
+    SELECT 
+      hc.*,
+      p.nombre as paciente_nombre,
+      u.nombre_usuario as medico_nombre
+    FROM historiales_clinicos hc
+    LEFT JOIN pacientes p ON hc.paciente_id = p.id
+    LEFT JOIN usuarios u ON hc.medico_id = u.id
+    WHERE hc.paciente_id = ?
+    ORDER BY hc.fecha_consulta DESC
+  `;
+  
+  db.query('SELECT * FROM pacientes WHERE id = ?', [pacienteId], (err, pacienteResults) => {
+    if (err || pacienteResults.length === 0) {
+      console.error('Error obteniendo paciente:', err);
+      return res.status(404).send('Paciente no encontrado');
+    }
+    
+    const paciente = pacienteResults[0];
+    
+    db.query(query, [pacienteId], (err, results) => {
+      if (err) {
+        console.error('Error obteniendo historial:', err);
+        return res.status(500).send('Error al obtener historial clínico.');
+      }
+      
+      let html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <link rel="stylesheet" href="/styles.css">
+          <title>Historial Clínico - ${paciente.nombre}</title>
+          <style>
+            .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+            .paciente-info {
+              background: #f8f9fa;
+              padding: 20px;
+              border-radius: 10px;
+              margin-bottom: 30px;
+              border-left: 5px solid #607D8B;
+            }
+            .historial-card {
+              background: white;
+              border-radius: 10px;
+              padding: 25px;
+              margin-bottom: 20px;
+              box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+              border-left: 5px solid #4CAF50;
+            }
+            .historial-header {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 15px;
+              padding-bottom: 15px;
+              border-bottom: 2px solid #f0f0f0;
+            }
+            .historial-section {
+              margin-bottom: 15px;
+            }
+            .section-title {
+              font-weight: bold;
+              color: #333;
+              margin-bottom: 5px;
+              display: flex;
+              align-items: center;
+            }
+            .section-content {
+              padding: 10px;
+              background: #f8f9fa;
+              border-radius: 5px;
+              white-space: pre-line;
+            }
+            .empty-state {
+              text-align: center;
+              padding: 50px;
+              color: #666;
+              font-size: 18px;
+            }
+            .actions {
+              display: flex;
+              gap: 10px;
+              margin-bottom: 20px;
+            }
+            .action-btn { 
+              background: #4CAF50; 
+              color: white; 
+              padding: 10px 20px; 
+              border: none; 
+              border-radius: 5px; 
+              cursor: pointer; 
+              text-decoration: none; 
+              display: inline-block;
+            }
+            .action-btn:hover { background: #45a049; }
+            .action-btn.historial { background: #607D8B; }
+            .action-btn.historial:hover { background: #455A64; }
+            .action-btn.delete { background: #f44336; }
+            .action-btn.delete:hover { background: #d32f2f; }
+            .action-btn.edit { background: #FF9800; }
+            .action-btn.edit:hover { background: #F57C00; }
+          </style>
+        </head>
+        <body>
+          <div id="navbar-container"></div>
+          <div class="container">
+            <div class="paciente-info">
+              <h1>📋 Historial Clínico</h1>
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <h2 style="margin-top: 5px;">${paciente.nombre}</h2>
+                  <p><strong>Causa/Diagnóstico:</strong> ${paciente.causa}</p>
+                  <p><strong>Fecha de Registro:</strong> ${new Date(paciente.fecha_registro).toLocaleDateString('es-ES')}</p>
+                </div>
+                <div>
+                  <a href="/agregar-historial/${paciente.id}" class="action-btn">➕ Nuevo Registro</a>
+                </div>
+              </div>
+            </div>
+            
+            <div class="actions">
+              <a href="/ver-pacientes" class="action-btn">← Volver a Pacientes</a>
+              <a href="/agregar-historial/${paciente.id}" class="action-btn historial">➕ Agregar Registro</a>
+            </div>
+      `;
+      
+      if (results.length > 0) {
+        results.forEach(historial => {
+          const fecha = new Date(historial.fecha_consulta).toLocaleDateString('es-ES', { 
+            weekday: 'long', 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric' 
+          });
+          
+          html += `
+            <div class="historial-card">
+              <div class="historial-header">
+                <div>
+                  <h3 style="margin: 0;">Consulta del ${fecha}</h3>
+                  <p style="margin: 5px 0 0 0; color: #666;">Atendido por: ${historial.medico_nombre || 'Médico'}</p>
+                </div>
+                <div>
+                  <a href="/editar-historial/${historial.id}" class="action-btn edit" style="padding: 5px 10px; font-size: 14px;">
+                    ✏️ Editar
+                  </a>
+                  <form action="/eliminar-historial/${historial.id}" method="POST" style="display: inline;">
+                    <button type="submit" class="action-btn delete" style="padding: 5px 10px; font-size: 14px;" 
+                            onclick="return confirm('¿Estás seguro de eliminar este registro del historial?')">
+                      🗑️ Eliminar
+                    </button>
+                  </form>
+                </div>
+              </div>
+              
+              <div class="historial-section">
+                <div class="section-title">📝 Motivo de la Consulta:</div>
+                <div class="section-content">${historial.motivo_consulta}</div>
+              </div>
+              
+              ${historial.diagnostico ? `
+              <div class="historial-section">
+                <div class="section-title">🩺 Diagnóstico:</div>
+                <div class="section-content">${historial.diagnostico}</div>
+              </div>
+              ` : ''}
+              
+              ${historial.tratamiento ? `
+              <div class="historial-section">
+                <div class="section-title">💊 Tratamiento:</div>
+                <div class="section-content">${historial.tratamiento}</div>
+              </div>
+              ` : ''}
+              
+              ${historial.medicamentos_prescritos ? `
+              <div class="historial-section">
+                <div class="section-title">💊 Medicamentos Prescritos:</div>
+                <div class="section-content">${historial.medicamentos_prescritos}</div>
+              </div>
+              ` : ''}
+              
+              ${historial.observaciones ? `
+              <div class="historial-section">
+                <div class="section-title">📄 Observaciones:</div>
+                <div class="section-content">${historial.observaciones}</div>
+              </div>
+              ` : ''}
+              
+              <div style="font-size: 12px; color: #666; margin-top: 15px; text-align: right;">
+                Registrado: ${new Date(historial.fecha_creacion).toLocaleDateString('es-ES')}
+                ${historial.fecha_actualizacion ? ` | Actualizado: ${new Date(historial.fecha_actualizacion).toLocaleDateString('es-ES')}` : ''}
+              </div>
+            </div>
+          `;
+        });
+      } else {
+        html += `
+          <div class="empty-state">
+            <p>📭 No hay registros en el historial clínico de este paciente</p>
+            <p>¡Agrega el primer registro médico!</p>
+            <a href="/agregar-historial/${paciente.id}" class="action-btn historial" style="margin-top: 20px;">
+              ➕ Agregar Primer Registro
+            </a>
+          </div>
+        `;
+      }
+      
+      html += `
+            <div style="text-align: center; margin-top: 40px;">
+              <a href="/ver-pacientes" class="menu-btn" style="display: inline-block; width: auto; padding: 12px 30px;">
+                ← Volver a Pacientes
+              </a>
+            </div>
+          </div>
+          
+          <script>
+            fetch('/navbar')
+              .then(response => response.text())
+              .then(html => {
+                document.getElementById('navbar-container').innerHTML = html;
+              })
+              .catch(error => console.error('Error cargando navbar:', error));
+          </script>
+        </body>
+        </html>
+      `;
+      
+      res.send(html);
+    });
+  });
+});
+
+// Ver historial clínico propio (para pacientes)
+app.get('/ver-mi-historial', requireLogin, requireRole('paciente'), (req, res) => {
+  const user = req.session.user;
+  
+  db.query('SELECT id FROM pacientes WHERE usuario_id = ?', [user.id], (err, pacienteResults) => {
+    if (err || pacienteResults.length === 0) {
+      console.error('Error obteniendo paciente:', err);
+      return res.status(404).send('Paciente no encontrado');
+    }
+    
+    const pacienteId = pacienteResults[0].id;
+    
+    const query = `
+      SELECT 
+        hc.*,
+        p.nombre as paciente_nombre,
+        u.nombre_usuario as medico_nombre
+      FROM historiales_clinicos hc
+      LEFT JOIN pacientes p ON hc.paciente_id = p.id
+      LEFT JOIN usuarios u ON hc.medico_id = u.id
+      WHERE hc.paciente_id = ?
+      ORDER BY hc.fecha_consulta DESC
+    `;
+    
+    db.query('SELECT * FROM pacientes WHERE id = ?', [pacienteId], (err, pacienteData) => {
+      if (err || pacienteData.length === 0) {
+        return res.status(404).send('Paciente no encontrado');
+      }
+      
+      const paciente = pacienteData[0];
+      
+      db.query(query, [pacienteId], (err, results) => {
+        if (err) {
+          console.error('Error obteniendo historial:', err);
+          return res.status(500).send('Error al obtener historial clínico.');
+        }
+        
+        let html = `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <link rel="stylesheet" href="/styles.css">
+            <title>Mi Historial Clínico</title>
+            <style>
+              .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+              .paciente-info {
+                background: #f8f9fa;
+                padding: 20px;
+                border-radius: 10px;
+                margin-bottom: 30px;
+                border-left: 5px solid #9C27B0;
+              }
+              .historial-card {
+                background: white;
+                border-radius: 10px;
+                padding: 25px;
+                margin-bottom: 20px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                border-left: 5px solid #4CAF50;
+              }
+              .historial-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 15px;
+                padding-bottom: 15px;
+                border-bottom: 2px solid #f0f0f0;
+              }
+              .historial-section {
+                margin-bottom: 15px;
+              }
+              .section-title {
+                font-weight: bold;
+                color: #333;
+                margin-bottom: 5px;
+                display: flex;
+                align-items: center;
+              }
+              .section-content {
+                padding: 10px;
+                background: #f8f9fa;
+                border-radius: 5px;
+                white-space: pre-line;
+              }
+              .empty-state {
+                text-align: center;
+                padding: 50px;
+                color: #666;
+                font-size: 18px;
+              }
+            </style>
+          </head>
+          <body>
+            <div id="navbar-container"></div>
+            <div class="container">
+              <div class="paciente-info">
+                <h1>📋 Mi Historial Clínico</h1>
+                <div>
+                  <h2 style="margin-top: 5px;">${paciente.nombre}</h2>
+                  <p><strong>Causa/Diagnóstico:</strong> ${paciente.causa}</p>
+                  <p><strong>Fecha de Registro:</strong> ${new Date(paciente.fecha_registro).toLocaleDateString('es-ES')}</p>
+                </div>
+              </div>
+        `;
+        
+        if (results.length > 0) {
+          results.forEach(historial => {
+            const fecha = new Date(historial.fecha_consulta).toLocaleDateString('es-ES', { 
+              weekday: 'long', 
+              year: 'numeric', 
+              month: 'long', 
+              day: 'numeric' 
+            });
+            
+            html += `
+              <div class="historial-card">
+                <div class="historial-header">
+                  <div>
+                    <h3 style="margin: 0;">Consulta del ${fecha}</h3>
+                    <p style="margin: 5px 0 0 0; color: #666;">Atendido por: ${historial.medico_nombre || 'Médico'}</p>
+                  </div>
+                </div>
+                
+                <div class="historial-section">
+                  <div class="section-title">📝 Motivo de la Consulta:</div>
+                  <div class="section-content">${historial.motivo_consulta}</div>
+                </div>
+                
+                ${historial.diagnostico ? `
+                <div class="historial-section">
+                  <div class="section-title">🩺 Diagnóstico:</div>
+                  <div class="section-content">${historial.diagnostico}</div>
+                </div>
+                ` : ''}
+                
+                ${historial.tratamiento ? `
+                <div class="historial-section">
+                  <div class="section-title">💊 Tratamiento:</div>
+                  <div class="section-content">${historial.tratamiento}</div>
+                </div>
+                ` : ''}
+                
+                ${historial.medicamentos_prescritos ? `
+                <div class="historial-section">
+                  <div class="section-title">💊 Medicamentos Prescritos:</div>
+                  <div class="section-content">${historial.medicamentos_prescritos}</div>
+                </div>
+                ` : ''}
+                
+                ${historial.observaciones ? `
+                <div class="historial-section">
+                  <div class="section-title">📄 Observaciones:</div>
+                  <div class="section-content">${historial.observaciones}</div>
+                </div>
+                ` : ''}
+                
+                <div style="font-size: 12px; color: #666; margin-top: 15px; text-align: right;">
+                  Registrado: ${new Date(historial.fecha_creacion).toLocaleDateString('es-ES')}
+                </div>
+              </div>
+            `;
+          });
+        } else {
+          html += `
+            <div class="empty-state">
+              <p>📭 No hay registros en tu historial clínico</p>
+              <p>¡Solicita una cita médica para comenzar tu historial!</p>
+              <a href="/solicitar-cita" class="menu-btn" style="margin-top: 20px; display: inline-block;">
+                📅 Solicitar Cita Médica
+              </a>
+            </div>
+          `;
+        }
+        
+        html += `
+              <div style="text-align: center; margin-top: 40px;">
+                <a href="/dashboard" class="menu-btn" style="display: inline-block; width: auto; padding: 12px 30px;">
+                  ← Volver al inicio
+                </a>
+              </div>
+            </div>
+            
+            <script>
+              fetch('/navbar')
+                .then(response => response.text())
+                .then(html => {
+                  document.getElementById('navbar-container').innerHTML = html;
+                })
+                .catch(error => console.error('Error cargando navbar:', error));
+            </script>
+          </body>
+          </html>
+        `;
+        
+        res.send(html);
+      });
+    });
+  });
+});
+
+// Ver todos los historiales (para médicos y enfermeros)
+app.get('/ver-historiales', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
+  const query = `
+    SELECT 
+      hc.*,
+      p.nombre as paciente_nombre,
+      u.nombre_usuario as medico_nombre
+    FROM historiales_clinicos hc
+    LEFT JOIN pacientes p ON hc.paciente_id = p.id
+    LEFT JOIN usuarios u ON hc.medico_id = u.id
+    ORDER BY hc.fecha_consulta DESC
+    LIMIT 50
+  `;
+  
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error obteniendo historiales:', err);
+      return res.status(500).send('Error al obtener historiales clínicos.');
+    }
+    
+    let html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <link rel="stylesheet" href="/styles.css">
+        <title>Historiales Clínicos</title>
+        <style>
+          .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+          .search-container {
+            margin-bottom: 20px;
+          }
+          .historial-card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 15px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            border-left: 5px solid #607D8B;
+          }
+          .historial-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+          }
+          .historial-preview {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 10px;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+          }
+          .view-btn {
+            background: #607D8B;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            text-decoration: none;
+            font-size: 14px;
+          }
+          .view-btn:hover {
+            background: #455A64;
+          }
+          .empty-state {
+            text-align: center;
+            padding: 50px;
+            color: #666;
+            font-size: 18px;
+          }
+          .actions {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+          }
+          .action-btn { 
+            background: #4CAF50; 
+            color: white; 
+            padding: 10px 20px; 
+            border: none; 
+            border-radius: 5px; 
+            cursor: pointer; 
+            text-decoration: none; 
+            display: inline-block;
+          }
+          .action-btn:hover { background: #45a049; }
+          .action-btn.historial { background: #607D8B; }
+          .action-btn.historial:hover { background: #455A64; }
+        </style>
+      </head>
+      <body>
+        <div id="navbar-container"></div>
+        <div class="container">
+          <h1>📋 Historiales Clínicos</h1>
+          
+          <div class="actions">
+            <a href="/agregar-historial" class="action-btn historial">➕ Agregar Historial</a>
+            <a href="/ver-pacientes" class="action-btn">👥 Ver Pacientes</a>
+          </div>
+          
+          <div class="search-container">
+            <input type="text" id="buscar" placeholder="🔍 Buscar por paciente, médico o diagnóstico...">
+          </div>
+    `;
+    
+    if (results.length > 0) {
+      results.forEach(historial => {
+        const fecha = new Date(historial.fecha_consulta).toLocaleDateString('es-ES');
+        const preview = historial.motivo_consulta.substring(0, 100) + (historial.motivo_consulta.length > 100 ? '...' : '');
+        
+        html += `
+          <div class="historial-card">
+            <div class="historial-header">
+              <div>
+                <h3 style="margin: 0;">${historial.paciente_nombre}</h3>
+                <p style="margin: 5px 0; color: #666; font-size: 14px;">
+                  📅 ${fecha} | 👨‍⚕️ ${historial.medico_nombre || 'Médico'}
+                </p>
+              </div>
+              <a href="/ver-historial-paciente/${historial.paciente_id}" class="view-btn">
+                Ver Completo
+              </a>
+            </div>
+            <div class="historial-preview">
+              <strong>Motivo:</strong> ${preview}
+            </div>
+            ${historial.diagnostico ? `
+            <div style="font-size: 13px; color: #666;">
+              <strong>Diagnóstico:</strong> ${historial.diagnostico.substring(0, 50)}${historial.diagnostico.length > 50 ? '...' : ''}
+            </div>
+            ` : ''}
+          </div>
+        `;
+      });
+    } else {
+      html += `
+        <div class="empty-state">
+          <p>📭 No hay historiales clínicos registrados</p>
+          <p>¡Agrega el primer historial médico!</p>
+          <a href="/agregar-historial" class="action-btn historial" style="margin-top: 20px;">
+            ➕ Agregar Primer Historial
+          </a>
+        </div>
+      `;
+    }
+    
+    html += `
+          <div style="text-align: center; margin-top: 40px;">
+            <a href="/dashboard" class="menu-btn" style="display: inline-block; width: auto; padding: 12px 30px;">
+              ← Volver al inicio
+            </a>
+          </div>
+        </div>
+        
+        <script>
+          fetch('/navbar')
+            .then(response => response.text())
+            .then(html => {
+              document.getElementById('navbar-container').innerHTML = html;
+            })
+            .catch(error => console.error('Error cargando navbar:', error));
+          
+          document.getElementById('buscar').addEventListener('keyup', (e) => {
+            const query = e.target.value.toLowerCase();
+            const cards = document.querySelectorAll('.historial-card');
+            
+            cards.forEach((card) => {
+              const texto = card.innerText.toLowerCase();
+              card.style.display = texto.includes(query) ? '' : 'none';
+            });
+          });
+        </script>
+      </body>
+      </html>
+    `;
+    
+    res.send(html);
+  });
+});
+
+// Agregar historial clínico
+app.get('/agregar-historial/:pacienteId?', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
+  const pacienteId = req.params.pacienteId;
+  
+  let pacienteSelect = '';
+  let pacienteInfo = '';
+  
+  if (pacienteId) {
+    // Si hay un paciente específico, obtener su información
+    db.query('SELECT * FROM pacientes WHERE id = ?', [pacienteId], (err, results) => {
+      if (err || results.length === 0) {
+        return res.redirect('/ver-pacientes');
+      }
+      
+      const paciente = results[0];
+      pacienteInfo = `
+        <div class="paciente-info" style="background: #e8f5e9; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+          <h3 style="margin-top: 0;">Agregando historial para:</h3>
+          <p><strong>Nombre:</strong> ${paciente.nombre}</p>
+          <p><strong>Causa/Diagnóstico:</strong> ${paciente.causa}</p>
+          <input type="hidden" name="paciente_id" value="${paciente.id}">
+        </div>
+      `;
+      
+      renderForm(pacienteSelect, pacienteInfo);
+    });
+  } else {
+    // Si no hay paciente específico, mostrar selector
+    db.query('SELECT * FROM pacientes ORDER BY nombre', (err, pacientes) => {
+      if (err) {
+        console.error('Error obteniendo pacientes:', err);
+        return res.status(500).send('Error al cargar formulario.');
+      }
+      
+      pacientes.forEach(p => {
+        pacienteSelect += `<option value="${p.id}">${p.nombre} - ${p.causa}</option>`;
+      });
+      
+      renderForm(pacienteSelect, pacienteInfo);
+    });
+  }
+  
+  function renderForm(pacienteSelect, pacienteInfo) {
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <link rel="stylesheet" href="/styles.css">
+        <title>Agregar Historial Clínico</title>
+        <style>
+          .container { max-width: 800px; margin: 0 auto; padding: 20px; }
+          .form-group { margin-bottom: 20px; }
+          label { display: block; margin-bottom: 8px; font-weight: bold; color: #333; }
+          input, select, textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+            box-sizing: border-box;
+          }
+          textarea {
+            min-height: 100px;
+            resize: vertical;
+          }
+          button {
+            background: #4CAF50;
+            color: white;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+          }
+          button:hover { background: #45a049; }
+          .info-text {
+            color: #666;
+            font-size: 14px;
+            margin-top: 5px;
+          }
+          .back-btn {
+            display: inline-block;
+            margin-top: 20px;
+            color: #3498db;
+            text-decoration: none;
+          }
+          .back-btn:hover {
+            text-decoration: underline;
+          }
+        </style>
+      </head>
+      <body>
+        <div id="navbar-container"></div>
+        <div class="container">
+          <h1>📋 Agregar Historial Clínico</h1>
+          
+          <div id="message" style="margin-bottom: 20px;"></div>
+          
+          ${pacienteId ? `<a href="/ver-historial-paciente/${pacienteId}" class="back-btn">← Volver al historial del paciente</a>` : ''}
+          ${!pacienteId ? `<a href="/ver-historiales" class="back-btn">← Volver a historiales</a>` : ''}
+          
+          <form id="historialForm">
+            ${pacienteInfo}
+            
+            ${!pacienteId ? `
+            <div class="form-group">
+              <label for="paciente_id">Seleccionar Paciente:</label>
+              <select id="paciente_id" name="paciente_id" required>
+                <option value="">Selecciona un paciente</option>
+                ${pacienteSelect}
+              </select>
+            </div>
+            ` : ''}
+            
+            <div class="form-group">
+              <label for="fecha_consulta">Fecha de la Consulta:</label>
+              <input type="date" id="fecha_consulta" name="fecha_consulta" required 
+                     value="${new Date().toISOString().split('T')[0]}">
+              <div class="info-text">Fecha en que se realizó la consulta</div>
+            </div>
+            
+            <div class="form-group">
+              <label for="motivo_consulta">Motivo de la Consulta:</label>
+              <textarea id="motivo_consulta" name="motivo_consulta" required 
+                        placeholder="Describa el motivo principal de la consulta..."></textarea>
+              <div class="info-text">Síntomas, quejas o razones de la visita</div>
+            </div>
+            
+            <div class="form-group">
+              <label for="diagnostico">Diagnóstico:</label>
+              <textarea id="diagnostico" name="diagnostico" 
+                        placeholder="Diagnóstico médico (opcional)..."></textarea>
+              <div class="info-text">Diagnóstico principal o secundarios</div>
+            </div>
+            
+            <div class="form-group">
+              <label for="tratamiento">Tratamiento Indicado:</label>
+              <textarea id="tratamiento" name="tratamiento" 
+                        placeholder="Tratamiento prescrito (opcional)..."></textarea>
+              <div class="info-text">Procedimientos, terapias o intervenciones</div>
+            </div>
+            
+            <div class="form-group">
+              <label for="medicamentos_prescritos">Medicamentos Prescritos:</label>
+              <textarea id="medicamentos_prescritos" name="medicamentos_prescritos" 
+                        placeholder="Medicamentos, dosis y frecuencia (opcional)..."></textarea>
+              <div class="info-text">Incluir dosis, frecuencia y duración</div>
+            </div>
+            
+            <div class="form-group">
+              <label for="observaciones">Observaciones Adicionales:</label>
+              <textarea id="observaciones" name="observaciones" 
+                        placeholder="Otras observaciones relevantes (opcional)..."></textarea>
+              <div class="info-text">Notas adicionales, recomendaciones, etc.</div>
+            </div>
+            
+            <button type="submit">💾 Guardar Historial</button>
+          </form>
+          
+          <div style="text-align: center; margin-top: 20px;">
+            ${pacienteId ? `<a href="/ver-historial-paciente/${pacienteId}" class="back-btn">← Cancelar y volver</a>` : ''}
+            ${!pacienteId ? `<a href="/ver-historiales" class="back-btn">← Cancelar y volver</a>` : ''}
+          </div>
+        </div>
+        
+        <script>
+          fetch('/navbar')
+            .then(response => response.text())
+            .then(html => {
+              document.getElementById('navbar-container').innerHTML = html;
+            })
+            .catch(error => console.error('Error cargando navbar:', error));
+          
+          document.getElementById('historialForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(this);
+            const data = Object.fromEntries(formData.entries());
+            
+            // Validación básica
+            if (!data.fecha_consulta || !data.motivo_consulta) {
+              showMessage('Fecha y motivo de consulta son requeridos', 'error');
+              return;
+            }
+            
+            try {
+              const response = await fetch('/api/historiales/agregar', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+              });
+              
+              const result = await response.json();
+              
+              const messageDiv = document.getElementById('message');
+              if (result.success) {
+                messageDiv.innerHTML = '<div style="background: #e6ffe6; color: #008000; padding: 15px; border-radius: 5px; margin-bottom: 20px;">✅ ' + result.message + '</div>';
+                
+                setTimeout(() => {
+                  if (${pacienteId ? 'true' : 'false'}) {
+                    window.location.href = '/ver-historial-paciente/' + data.paciente_id;
+                  } else {
+                    window.location.href = '/ver-historiales';
+                  }
+                }, 2000);
+              } else {
+                messageDiv.innerHTML = '<div style="background: #ffe6e6; color: #ff0000; padding: 15px; border-radius: 5px; margin-bottom: 20px;">❌ ' + result.error + '</div>';
+              }
+            } catch (error) {
+              const messageDiv = document.getElementById('message');
+              messageDiv.innerHTML = '<div style="background: #ffe6e6; color: #ff0000; padding: 15px; border-radius: 5px; margin-bottom: 20px;">❌ Error de conexión: ' + error.message + '</div>';
+            }
+          });
+          
+          function showMessage(text, type) {
+            const messageDiv = document.getElementById('message');
+            messageDiv.innerHTML = '<div style="background: ' + (type === 'error' ? '#ffe6e6' : '#e6ffe6') + '; color: ' + (type === 'error' ? '#ff0000' : '#008000') + '; padding: 15px; border-radius: 5px; margin-bottom: 20px;">' + text + '</div>';
+          }
+        </script>
+      </body>
+      </html>
+    `;
+    
+    res.send(html);
+  }
+});
+
+// Editar historial clínico
+app.get('/editar-historial/:id', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
+  const historialId = req.params.id;
+  
+  db.query('SELECT * FROM historiales_clinicos WHERE id = ?', [historialId], (err, results) => {
+    if (err || results.length === 0) {
+      console.error('Error obteniendo historial:', err);
+      return res.status(404).send('Registro de historial no encontrado');
+    }
+    
+    const historial = results[0];
+    
+    db.query('SELECT * FROM pacientes WHERE id = ?', [historial.paciente_id], (err, pacienteResults) => {
+      if (err || pacienteResults.length === 0) {
+        return res.status(404).send('Paciente no encontrado');
+      }
+      
+      const paciente = pacienteResults[0];
+      
+      const html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <link rel="stylesheet" href="/styles.css">
+          <title>Editar Historial Clínico</title>
+          <style>
+            .container { max-width: 800px; margin: 0 auto; padding: 20px; }
+            .form-group { margin-bottom: 20px; }
+            label { display: block; margin-bottom: 8px; font-weight: bold; color: #333; }
+            input, select, textarea {
+              width: 100%;
+              padding: 12px;
+              border: 1px solid #ddd;
+              border-radius: 5px;
+              font-size: 16px;
+              box-sizing: border-box;
+            }
+            textarea {
+              min-height: 100px;
+              resize: vertical;
+            }
+            button {
+              background: #FF9800;
+              color: white;
+              padding: 12px 25px;
+              border: none;
+              border-radius: 5px;
+              cursor: pointer;
+              font-size: 16px;
+              width: 100%;
+            }
+            button:hover { background: #F57C00; }
+            .info-text {
+              color: #666;
+              font-size: 14px;
+              margin-top: 5px;
+            }
+            .paciente-info {
+              background: #fff3e0;
+              padding: 15px;
+              border-radius: 5px;
+              margin-bottom: 20px;
+              border-left: 5px solid #FF9800;
+            }
+            .back-btn {
+              display: inline-block;
+              margin-top: 20px;
+              color: #3498db;
+              text-decoration: none;
+            }
+            .back-btn:hover {
+              text-decoration: underline;
+            }
+          </style>
+        </head>
+        <body>
+          <div id="navbar-container"></div>
+          <div class="container">
+            <h1>✏️ Editar Historial Clínico</h1>
+            
+            <div id="message" style="margin-bottom: 20px;"></div>
+            
+            <a href="/ver-historial-paciente/${historial.paciente_id}" class="back-btn">← Volver al historial del paciente</a>
+            
+            <div class="paciente-info">
+              <h3 style="margin-top: 0;">Editando historial de:</h3>
+              <p><strong>Paciente:</strong> ${paciente.nombre}</p>
+              <p><strong>Causa/Diagnóstico:</strong> ${paciente.causa}</p>
+              <p><strong>Fecha original:</strong> ${new Date(historial.fecha_consulta).toLocaleDateString('es-ES')}</p>
+            </div>
+            
+            <form id="historialForm">
+              <input type="hidden" name="id" value="${historial.id}">
+              
+              <div class="form-group">
+                <label for="fecha_consulta">Fecha de la Consulta:</label>
+                <input type="date" id="fecha_consulta" name="fecha_consulta" required 
+                       value="${historial.fecha_consulta.toISOString().split('T')[0]}">
+                <div class="info-text">Fecha en que se realizó la consulta</div>
+              </div>
+              
+              <div class="form-group">
+                <label for="motivo_consulta">Motivo de la Consulta:</label>
+                <textarea id="motivo_consulta" name="motivo_consulta" required 
+                          placeholder="Describa el motivo principal de la consulta...">${historial.motivo_consulta}</textarea>
+                <div class="info-text">Síntomas, quejas o razones de la visita</div>
+              </div>
+              
+              <div class="form-group">
+                <label for="diagnostico">Diagnóstico:</label>
+                <textarea id="diagnostico" name="diagnostico" 
+                          placeholder="Diagnóstico médico (opcional)...">${historial.diagnostico || ''}</textarea>
+                <div class="info-text">Diagnóstico principal o secundarios</div>
+              </div>
+              
+              <div class="form-group">
+                <label for="tratamiento">Tratamiento Indicado:</label>
+                <textarea id="tratamiento" name="tratamiento" 
+                          placeholder="Tratamiento prescrito (opcional)...">${historial.tratamiento || ''}</textarea>
+                <div class="info-text">Procedimientos, terapias o intervenciones</div>
+              </div>
+              
+              <div class="form-group">
+                <label for="medicamentos_prescritos">Medicamentos Prescritos:</label>
+                <textarea id="medicamentos_prescritos" name="medicamentos_prescritos" 
+                          placeholder="Medicamentos, dosis y frecuencia (opcional)...">${historial.medicamentos_prescritos || ''}</textarea>
+                <div class="info-text">Incluir dosis, frecuencia y duración</div>
+              </div>
+              
+              <div class="form-group">
+                <label for="observaciones">Observaciones Adicionales:</label>
+                <textarea id="observaciones" name="observaciones" 
+                          placeholder="Otras observaciones relevantes (opcional)...">${historial.observaciones || ''}</textarea>
+                <div class="info-text">Notas adicionales, recomendaciones, etc.</div>
+              </div>
+              
+              <button type="submit">💾 Guardar Cambios</button>
+            </form>
+            
+            <div style="text-align: center; margin-top: 20px;">
+              <a href="/ver-historial-paciente/${historial.paciente_id}" class="back-btn">← Cancelar y volver</a>
+            </div>
+          </div>
+          
+          <script>
+            fetch('/navbar')
+              .then(response => response.text())
+              .then(html => {
+                document.getElementById('navbar-container').innerHTML = html;
+              })
+              .catch(error => console.error('Error cargando navbar:', error));
+            
+            document.getElementById('historialForm').addEventListener('submit', async function(e) {
+              e.preventDefault();
+              
+              const formData = new FormData(this);
+              const data = Object.fromEntries(formData.entries());
+              
+              // Validación básica
+              if (!data.fecha_consulta || !data.motivo_consulta) {
+                showMessage('Fecha y motivo de consulta son requeridos', 'error');
+                return;
+              }
+              
+              try {
+                const response = await fetch('/api/historiales/editar', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify(data)
+                });
+                
+                const result = await response.json();
+                
+                const messageDiv = document.getElementById('message');
+                if (result.success) {
+                  messageDiv.innerHTML = '<div style="background: #e6ffe6; color: #008000; padding: 15px; border-radius: 5px; margin-bottom: 20px;">✅ ' + result.message + '</div>';
+                  
+                  setTimeout(() => {
+                    window.location.href = '/ver-historial-paciente/${historial.paciente_id}';
+                  }, 2000);
+                } else {
+                  messageDiv.innerHTML = '<div style="background: #ffe6e6; color: #ff0000; padding: 15px; border-radius: 5px; margin-bottom: 20px;">❌ ' + result.error + '</div>';
+                }
+              } catch (error) {
+                const messageDiv = document.getElementById('message');
+                messageDiv.innerHTML = '<div style="background: #ffe6e6; color: #ff0000; padding: 15px; border-radius: 5px; margin-bottom: 20px;">❌ Error de conexión: ' + error.message + '</div>';
+              }
+            });
+            
+            function showMessage(text, type) {
+              const messageDiv = document.getElementById('message');
+              messageDiv.innerHTML = '<div style="background: ' + (type === 'error' ? '#ffe6e6' : '#e6ffe6') + '; color: ' + (type === 'error' ? '#ff0000' : '#008000') + '; padding: 15px; border-radius: 5px; margin-bottom: 20px;">' + text + '</div>';
+            }
+          </script>
+        </body>
+        </html>
+      `;
+      
+      res.send(html);
+    });
+  });
+});
+
+// Eliminar historial clínico
+app.post('/eliminar-historial/:id', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
+  const historialId = req.params.id;
+  
+  db.query('SELECT paciente_id FROM historiales_clinicos WHERE id = ?', [historialId], (err, results) => {
+    if (err || results.length === 0) {
+      console.error('Error obteniendo historial:', err);
+      return res.status(404).send('Registro de historial no encontrado');
+    }
+    
+    const pacienteId = results[0].paciente_id;
+    
+    db.query('DELETE FROM historiales_clinicos WHERE id = ?', [historialId], (err) => {
+      if (err) {
+        console.error('Error eliminando historial:', err);
+        return res.status(500).send('Error al eliminar el registro de historial');
+      }
+      
+      res.redirect(`/ver-historial-paciente/${pacienteId}`);
+    });
+  });
+});
+
+// ========== APIs PARA HISTORIALES CLÍNICOS ==========
+app.post('/api/historiales/agregar', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
+  const user = req.session.user;
+  const { paciente_id, fecha_consulta, motivo_consulta, diagnostico, tratamiento, medicamentos_prescritos, observaciones } = req.body;
+  
+  if (!paciente_id || !fecha_consulta || !motivo_consulta) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Paciente, fecha y motivo de consulta son requeridos' 
+    });
+  }
+  
+  // Verificar que el paciente existe
+  db.query('SELECT id FROM pacientes WHERE id = ?', [paciente_id], (err, pacienteResults) => {
+    if (err || pacienteResults.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Paciente no encontrado' 
+      });
+    }
+    
+    const insertQuery = `
+      INSERT INTO historiales_clinicos 
+        (paciente_id, medico_id, fecha_consulta, motivo_consulta, diagnostico, tratamiento, medicamentos_prescritos, observaciones)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    
+    db.query(insertQuery, [
+      paciente_id, 
+      user.id, 
+      fecha_consulta, 
+      motivo_consulta, 
+      diagnostico || null, 
+      tratamiento || null, 
+      medicamentos_prescritos || null, 
+      observaciones || null
+    ], (err, results) => {
+      if (err) {
+        console.error('Error insertando historial:', err);
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Error al guardar el historial clínico' 
+        });
+      }
+      
+      console.log('✅ Historial clínico agregado: ID ' + results.insertId + ', Paciente ' + paciente_id + ', Médico ' + user.id);
+      
+      res.json({ 
+        success: true, 
+        message: 'Historial clínico registrado exitosamente',
+        historialId: results.insertId,
+        pacienteId: paciente_id
+      });
+    });
+  });
+});
+
+app.post('/api/historiales/editar', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
+  const user = req.session.user;
+  const { id, fecha_consulta, motivo_consulta, diagnostico, tratamiento, medicamentos_prescritos, observaciones } = req.body;
+  
+  if (!id || !fecha_consulta || !motivo_consulta) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'ID, fecha y motivo de consulta son requeridos' 
+    });
+  }
+  
+  // Verificar que el historial existe y pertenece al médico
+  db.query('SELECT * FROM historiales_clinicos WHERE id = ?', [id], (err, results) => {
+    if (err || results.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Registro de historial no encontrado' 
+      });
+    }
+    
+    const historial = results[0];
+    
+    // Solo el médico que creó el registro o administradores pueden editarlo
+    if (historial.medico_id !== user.id && user.tipo_usuario !== 'admin') {
+      return res.status(403).json({ 
+        success: false, 
+        error: 'No tienes permiso para editar este registro' 
+      });
+    }
+    
+    const updateQuery = `
+      UPDATE historiales_clinicos 
+      SET fecha_consulta = ?, motivo_consulta = ?, diagnostico = ?, tratamiento = ?, 
+          medicamentos_prescritos = ?, observaciones = ?, fecha_actualizacion = NOW()
+      WHERE id = ?
+    `;
+    
+    db.query(updateQuery, [
+      fecha_consulta, 
+      motivo_consulta, 
+      diagnostico || null, 
+      tratamiento || null, 
+      medicamentos_prescritos || null, 
+      observaciones || null,
+      id
+    ], (err, results) => {
+      if (err) {
+        console.error('Error actualizando historial:', err);
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Error al actualizar el historial clínico' 
+        });
+      }
+      
+      console.log('✅ Historial clínico actualizado: ID ' + id);
+      
+      res.json({ 
+        success: true, 
+        message: 'Historial clínico actualizado exitosamente',
+        historialId: id,
+        pacienteId: historial.paciente_id
+      });
+    });
+  });
+});
+
+// ========== AGREGAR PACIENTE ==========
 app.get('/agregar-paciente', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -2177,7 +3441,7 @@ app.post('/eliminar-paciente', requireLogin, requireRole('medico', 'enfermero'),
         console.error('Error:', err);
         return res.send('Error al eliminar paciente (puede tener registros relacionados).');
       }
-      console.log(`Paciente eliminado: ${paciente.nombre} (ID: ${id})`);
+      console.log('Paciente eliminado: ' + paciente.nombre + ' (ID: ' + id + ')');
       res.redirect('/eliminar-paciente');
     });
   });
@@ -2185,7 +3449,7 @@ app.post('/eliminar-paciente', requireLogin, requireRole('medico', 'enfermero'),
 
 // ========== RUTAS DE MEDICAMENTOS ==========
 app.get('/ver-medicamentos', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
-  console.log(`💊 Acceso a /ver-medicamentos por: ${req.session.user.nombre_usuario} (${req.session.user.tipo_usuario})`);
+  console.log('💊 Acceso a /ver-medicamentos por: ' + req.session.user.nombre_usuario + ' (' + req.session.user.tipo_usuario + ')');
   
   db.query('SELECT * FROM medicamentos', (err, results) => {
     if (err) return res.send('Error al obtener medicamentos.');
@@ -2277,7 +3541,7 @@ app.get('/agregar-medicamento', requireLogin, requireRole('medico'), (req, res) 
         <form action="/agregar-medicamento" method="POST">
           <div class="form-group">
             <label>Nombre:</label>
-            <input type="text" name="nombre" required>
+            <input type="text" name"nombre" required>
           </div>
           <div class="form-group">
             <label>Función:</label>
@@ -2422,7 +3686,7 @@ app.post('/eliminar-medicamento', requireLogin, requireRole('medico'), (req, res
 
 // ========== RUTAS DE DISPOSITIVOS MÉDICOS ==========
 app.get('/ver-dispositivos', requireLogin, requireRole('medico', 'enfermero'), (req, res) => {
-  console.log(`🩺 Acceso a /ver-dispositivos por: ${req.session.user.nombre_usuario} (${req.session.user.tipo_usuario})`);
+  console.log('🩺 Acceso a /ver-dispositivos por: ' + req.session.user.nombre_usuario + ' (' + req.session.user.tipo_usuario + ')');
   
   db.query('SELECT * FROM maquinas', (err, results) => {
     if (err) {
@@ -2460,12 +3724,15 @@ app.get('/ver-dispositivos', requireLogin, requireRole('medico', 'enfermero'), (
     `;
 
     results.forEach(m => {
+      const estadoColor = m.estado === 'Disponible' ? '#d4edda' : m.estado === 'En uso' ? '#fff3cd' : '#f8d7da';
+      const textoColor = m.estado === 'Disponible' ? '#155724' : m.estado === 'En uso' ? '#856404' : '#721c24';
+      
       html += `
               <tr>
                 <td>${m.id}</td>
                 <td><strong>${m.nombre}</strong></td>
                 <td>${m.tipo}</td>
-                <td><span style="padding: 6px 12px; border-radius: 20px; background-color: ${m.estado === 'Disponible' ? '#d4edda' : m.estado === 'En uso' ? '#fff3cd' : '#f8d7da'}; color: ${m.estado === 'Disponible' ? '#155724' : m.estado === 'En uso' ? '#856404' : '#721c24'};">${m.estado}</span></td>
+                <td><span style="padding: 6px 12px; border-radius: 20px; background-color: ${estadoColor}; color: ${textoColor};">${m.estado}</span></td>
               </tr>
       `;
     });
@@ -2480,7 +3747,6 @@ app.get('/ver-dispositivos', requireLogin, requireRole('medico', 'enfermero'), (
           </div>
         </div>
         <script>
-          // Función simplificada para cargar navbar
           function cargarNavbar() {
             fetch('/navbar')
               .then(response => {
@@ -2494,16 +3760,13 @@ app.get('/ver-dispositivos', requireLogin, requireRole('medico', 'enfermero'), (
               })
               .catch(error => {
                 console.error('Error cargando navbar:', error);
-                // Mostrar un navbar básico si falla
                 document.getElementById('navbar-container').innerHTML = 
                   '<nav><ul><li><a href="/dashboard">🏠 Inicio</a></li><li><a href="/logout">🚪 Cerrar Sesión</a></li></ul></nav>';
               });
           }
           
-          // Cargar navbar al inicio
           cargarNavbar();
           
-          // Configurar búsqueda
           document.getElementById('buscar').addEventListener('keyup', (e) => {
             const query = e.target.value.toLowerCase();
             const filas = document.querySelectorAll('.delete-table tbody tr');
@@ -2610,7 +3873,7 @@ app.get('/agregar-dispositivo', requireLogin, requireRole('medico'), (req, res) 
       <div class="container">
         <h2>➕ Agregar Dispositivo Médico</h2>
         
-        ${errorMessage ? `<div class="error-message">⚠️ ${errorMessage}</div>` : ''}
+        ${errorMessage ? '<div class="error-message">⚠️ ' + errorMessage + '</div>' : ''}
         
         <form action="/agregar-dispositivo" method="POST" id="dispositivoForm">
           <div class="form-group">
@@ -2650,7 +3913,6 @@ app.get('/agregar-dispositivo', requireLogin, requireRole('medico'), (req, res) 
       </div>
       
       <script>
-        // Cargar navbar
         fetch('/navbar')
           .then(response => response.text())
           .then(html => {
@@ -2662,7 +3924,6 @@ app.get('/agregar-dispositivo', requireLogin, requireRole('medico'), (req, res) 
               '<nav><ul><li><a href="/dashboard">🏠 Inicio</a></li><li><a href="/logout">🚪 Cerrar Sesión</a></li></ul></nav>';
           });
         
-        // Validación del formulario
         document.getElementById('dispositivoForm').addEventListener('submit', function(e) {
           const nombre = document.getElementById('nombre').value.trim();
           const tipo = document.getElementById('tipo').value.trim();
@@ -2689,11 +3950,10 @@ app.post('/agregar-dispositivo', requireLogin, requireRole('medico'), (req, res)
   
   console.log('📝 Intentando agregar dispositivo:', { nombre, tipo, estado });
   
-  // Validar campos requeridos
   if (!nombre || !tipo || !estado) {
     console.error('❌ Campos faltantes al agregar dispositivo');
     const errorMsg = encodeURIComponent('Nombre, Tipo y Estado son campos requeridos.');
-    return res.redirect(`/agregar-dispositivo?error=${errorMsg}`);
+    return res.redirect('/agregar-dispositivo?error=' + errorMsg);
   }
   
   db.query('INSERT INTO maquinas (nombre, tipo, estado) VALUES (?, ?, ?)', 
@@ -2701,11 +3961,11 @@ app.post('/agregar-dispositivo', requireLogin, requireRole('medico'), (req, res)
     (err, results) => {
       if (err) {
         console.error('❌ Error en consulta SQL al agregar dispositivo:', err);
-        const errorMsg = encodeURIComponent(`Error al guardar en la base de datos: ${err.message}`);
-        return res.redirect(`/agregar-dispositivo?error=${errorMsg}`);
+        const errorMsg = encodeURIComponent('Error al guardar en la base de datos: ' + err.message);
+        return res.redirect('/agregar-dispositivo?error=' + errorMsg);
       }
       
-      console.log(`✅ Dispositivo médico agregado: ${nombre} (ID: ${results.insertId})`);
+      console.log('✅ Dispositivo médico agregado: ' + nombre + ' (ID: ' + results.insertId + ')');
       res.redirect('/ver-dispositivos');
     }
   );
@@ -2747,12 +4007,15 @@ app.get('/eliminar-dispositivo', requireLogin, requireRole('medico'), (req, res)
     `;
 
     results.forEach(m => {
+      const estadoColor = m.estado === 'Disponible' ? '#d4edda' : m.estado === 'En uso' ? '#fff3cd' : '#f8d7da';
+      const textoColor = m.estado === 'Disponible' ? '#155724' : m.estado === 'En uso' ? '#856404' : '#721c24';
+      
       html += `
               <tr>
                 <td>${m.id}</td>
                 <td><strong>${m.nombre}</strong></td>
                 <td>${m.tipo}</td>
-                <td><span style="padding: 6px 12px; border-radius: 20px; background-color: ${m.estado === 'Disponible' ? '#d4edda' : m.estado === 'En uso' ? '#fff3cd' : '#f8d7da'}; color: ${m.estado === 'Disponible' ? '#155724' : m.estado === 'En uso' ? '#856404' : '#721c24'};">${m.estado}</span></td>
+                <td><span style="padding: 6px 12px; border-radius: 20px; background-color: ${estadoColor}; color: ${textoColor};">${m.estado}</span></td>
                 <td>
                   <form action="/eliminar-dispositivo" method="POST" class="delete-form">
                     <input type="hidden" name="id" value="${m.id}">
@@ -2826,9 +4089,7 @@ app.post('/eliminar-dispositivo', requireLogin, requireRole('medico'), (req, res
   });
 });
 
-// ========== SISTEMA DE MENSAJERÍA (SOLO MÉDICOS Y ENFERMEROS) ==========
-
-// Ruta principal de mensajería (solo médicos y enfermeros)
+// ========== SISTEMA DE MENSAJERÍA ==========
 app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
   const tipoUsuario = req.session.user.tipo_usuario;
   
@@ -3282,9 +4543,7 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
       <script>
         let currentContactId = null;
         let messageInterval = null;
-        let typingTimeout = null;
         
-        // Cargar navbar
         fetch('/navbar')
           .then(response => response.text())
           .then(html => {
@@ -3294,7 +4553,6 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
             console.error('Error cargando navbar:', error);
           });
         
-        // Cargar contactos iniciales
         loadContacts();
         
         function loadContacts() {
@@ -3313,51 +4571,47 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
                   
                   let unreadBadge = '';
                   if (contact.unread_count > 0) {
-                    unreadBadge = \`<div class="unread-badge">\${contact.unread_count}</div>\`;
+                    unreadBadge = '<div class="unread-badge">' + contact.unread_count + '</div>';
                   }
                   
                   const contactTypeClass = contact.tipo_usuario === 'medico' ? 'medico' : 'enfermero';
                   
-                  contactDiv.innerHTML = \`
-                    <div class="contact-info">
-                      <div class="contact-name">
-                        \${contact.nombre}
-                        <span class="contact-type \${contactTypeClass}">\${contact.tipo_usuario}</span>
-                      </div>
-                      <div class="last-message">\${contact.last_message || 'No hay mensajes'}</div>
-                    </div>
-                    \${unreadBadge}
-                  \`;
+                  contactDiv.innerHTML = 
+                    '<div class="contact-info">' +
+                      '<div class="contact-name">' +
+                        contact.nombre +
+                        '<span class="contact-type ' + contactTypeClass + '">' + contact.tipo_usuario + '</span>' +
+                      '</div>' +
+                      '<div class="last-message">' + (contact.last_message || 'No hay mensajes') + '</div>' +
+                    '</div>' +
+                    unreadBadge;
                   
                   contactsList.appendChild(contactDiv);
                 });
                 
-                document.getElementById('online-count').textContent = \`\${data.contacts.length} colegas\`;
+                document.getElementById('online-count').textContent = data.contacts.length + ' colegas';
               } else {
-                contactsList.innerHTML = \`
-                  <div class="no-messages">
-                    <p>No tienes conversaciones todavía</p>
-                    <p><small>¡Haz clic en "Nuevo Mensaje" para comenzar!</small></p>
-                  </div>
-                \`;
+                contactsList.innerHTML = 
+                  '<div class="no-messages">' +
+                    '<p>No tienes conversaciones todavía</p>' +
+                    '<p><small>¡Haz clic en "Nuevo Mensaje" para comenzar!</small></p>' +
+                  '</div>';
                 document.getElementById('online-count').textContent = '0 colegas';
               }
             })
             .catch(error => {
               console.error('Error cargando contactos:', error);
-              document.getElementById('contacts-list').innerHTML = \`
-                <div class="no-messages">
-                  <p>Error cargando contactos</p>
-                  <p><small>Intenta recargar la página</small></p>
-                </div>
-              \`;
+              document.getElementById('contacts-list').innerHTML = 
+                '<div class="no-messages">' +
+                  '<p>Error cargando contactos</p>' +
+                  '<p><small>Intenta recargar la página</small></p>' +
+                '</div>';
             });
         }
         
         function loadConversation(contactId) {
           currentContactId = contactId;
           
-          // Marcar como activo en la lista
           document.querySelectorAll('.contact-item').forEach(item => {
             item.classList.remove('active');
             if (item.getAttribute('data-contact-id') == contactId) {
@@ -3365,12 +4619,10 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
             }
           });
           
-          // Mostrar campo de entrada
           document.getElementById('message-input-container').style.display = 'block';
           document.getElementById('current-contact-id').value = contactId;
           
-          // Cargar mensajes
-          fetch(\`/api/mensajes/conversacion/\${contactId}\`)
+          fetch('/api/mensajes/conversacion/' + contactId)
             .then(response => response.json())
             .then(data => {
               if (data.error) {
@@ -3378,25 +4630,22 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
                 return;
               }
               
-              // Actualizar encabezado
-              document.getElementById('chat-header').innerHTML = \`
-                <div class="chat-header-info">
-                  <h3>\${data.contactName}</h3>
-                  <small>\${data.contactType === 'medico' ? '👨‍⚕️ Médico' : '👩‍⚕️ Enfermero/a'}</small>
-                </div>
-                <div style="color: #666; font-size: 14px;">
-                  \${data.messages && data.messages.length > 0 ? 'Última actividad reciente' : 'Sin mensajes todavía'}
-                </div>
-              \`;
+              document.getElementById('chat-header').innerHTML = 
+                '<div class="chat-header-info">' +
+                  '<h3>' + data.contactName + '</h3>' +
+                  '<small>' + (data.contactType === 'medico' ? '👨‍⚕️ Médico' : '👩‍⚕️ Enfermero/a') + '</small>' +
+                '</div>' +
+                '<div style="color: #666; font-size: 14px;">' +
+                  (data.messages && data.messages.length > 0 ? 'Última actividad reciente' : 'Sin mensajes todavía') +
+                '</div>';
               
-              // Mostrar mensajes
               const messagesContainer = document.getElementById('messages-container');
               if (data.messages && data.messages.length > 0) {
                 messagesContainer.innerHTML = '';
                 
                 data.messages.forEach(msg => {
                   const messageDiv = document.createElement('div');
-                  messageDiv.className = \`message \${msg.sent ? 'sent' : 'received'}\`;
+                  messageDiv.className = 'message ' + (msg.sent ? 'sent' : 'received');
                   
                   const time = new Date(msg.fecha_envio).toLocaleTimeString('es-ES', {
                     hour: '2-digit',
@@ -3405,45 +4654,43 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
                   
                   const date = new Date(msg.fecha_envio).toLocaleDateString('es-ES');
                   
-                  messageDiv.innerHTML = \`
-                    \${msg.asunto ? \`<div class="message-subject">\${msg.asunto}</div>\` : ''}
-                    <div class="message-content">\${msg.mensaje}</div>
-                    <div class="message-time">
-                      \${date} \${time}
-                      \${msg.sent ? \`<span class="message-status">\${msg.leido ? '✓✓' : '✓'}</span>\` : ''}
-                    </div>
-                  \`;
+                  let subjectHtml = '';
+                  if (msg.asunto) {
+                    subjectHtml = '<div class="message-subject">' + msg.asunto + '</div>';
+                  }
+                  
+                  messageDiv.innerHTML = 
+                    subjectHtml +
+                    '<div class="message-content">' + msg.mensaje + '</div>' +
+                    '<div class="message-time">' +
+                      date + ' ' + time +
+                      (msg.sent ? '<span class="message-status">' + (msg.leido ? '✓✓' : '✓') + '</span>' : '') +
+                    '</div>';
                   
                   messagesContainer.appendChild(messageDiv);
                 });
                 
-                // Scroll al final
                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
                 
-                // Marcar mensajes como leídos
                 if (data.messages.some(msg => !msg.sent && !msg.leido)) {
-                  fetch(\`/api/mensajes/marcar-leidos/\${contactId}\`, { method: 'POST' });
-                  
-                  // Actualizar contador de no leídos
+                  fetch('/api/mensajes/marcar-leidos/' + contactId, { method: 'POST' });
                   setTimeout(loadContacts, 100);
                 }
               } else {
-                messagesContainer.innerHTML = \`
-                  <div class="no-messages">
-                    <p>No hay mensajes todavía</p>
-                    <p><small>¡Envía el primer mensaje a \${data.contactName}!</small></p>
-                  </div>
-                \`;
+                messagesContainer.innerHTML = 
+                  '<div class="no-messages">' +
+                    '<p>No hay mensajes todavía</p>' +
+                    '<p><small>¡Envía el primer mensaje a ' + data.contactName + '!</small></p>' +
+                  '</div>';
               }
             })
             .catch(error => {
               console.error('Error cargando conversación:', error);
-              document.getElementById('messages-container').innerHTML = \`
-                <div class="no-messages">
-                  <p>Error cargando la conversación</p>
-                  <p><small>Intenta nuevamente</small></p>
-                </div>
-              \`;
+              document.getElementById('messages-container').innerHTML = 
+                '<div class="no-messages">' +
+                  '<p>Error cargando la conversación</p>' +
+                  '<p><small>Intenta nuevamente</small></p>' +
+                '</div>';
             });
         }
         
@@ -3456,7 +4703,6 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
           
           if (!message || !contactId) return;
           
-          // Mostrar mensaje inmediatamente en la interfaz
           const messagesContainer = document.getElementById('messages-container');
           const messageDiv = document.createElement('div');
           messageDiv.className = 'message sent';
@@ -3465,20 +4711,17 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
           const time = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
           const date = now.toLocaleDateString('es-ES');
           
-          messageDiv.innerHTML = \`
-            <div class="message-content">\${message}</div>
-            <div class="message-time">
-              \${date} \${time}
-              <span class="message-status">✓</span>
-            </div>
-          \`;
+          messageDiv.innerHTML = 
+            '<div class="message-content">' + message + '</div>' +
+            '<div class="message-time">' +
+              date + ' ' + time +
+              '<span class="message-status">✓</span>' +
+            '</div>';
           messagesContainer.appendChild(messageDiv);
           messagesContainer.scrollTop = messagesContainer.scrollHeight;
           
-          // Limpiar input
           messageInput.value = '';
           
-          // Enviar al servidor
           fetch('/api/mensajes/enviar', {
             method: 'POST',
             headers: {
@@ -3492,7 +4735,6 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
           .then(response => response.json())
           .then(data => {
             if (data.success) {
-              // Actualizar lista de contactos
               loadContacts();
             } else {
               alert('Error al enviar mensaje: ' + data.error);
@@ -3516,7 +4758,7 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
                   const option = document.createElement('option');
                   option.value = dest.id;
                   const icon = dest.tipo_usuario === 'medico' ? '👨‍⚕️' : '👩‍⚕️';
-                  option.textContent = \`\${icon} \${dest.nombre} (\${dest.tipo_usuario})\`;
+                  option.textContent = icon + ' ' + dest.nombre + ' (' + dest.tipo_usuario + ')';
                   select.appendChild(option);
                 });
               }
@@ -3560,12 +4802,10 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
               hideNewMessageModal();
               loadContacts();
               
-              // Si estamos en conversación con este destinatario, recargar
               if (currentContactId == recipientId) {
                 loadConversation(recipientId);
               }
               
-              // Mostrar notificación de éxito
               alert('✅ Mensaje enviado correctamente');
             } else {
               alert('❌ Error: ' + data.error);
@@ -3585,7 +4825,6 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
           });
         }
         
-        // Actualizar mensajes cada 10 segundos
         messageInterval = setInterval(() => {
           if (currentContactId) {
             loadConversation(currentContactId);
@@ -3593,10 +4832,8 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
           loadContacts();
         }, 10000);
         
-        // Limpiar intervalo al salir de la página
         window.addEventListener('beforeunload', () => {
           if (messageInterval) clearInterval(messageInterval);
-          if (typingTimeout) clearTimeout(typingTimeout);
         });
       </script>
     </body>
@@ -3606,40 +4843,10 @@ app.get('/mensajeria', requireLogin, requireMedicoOrEnfermero, (req, res) => {
   res.send(html);
 });
 
-// ========== APIs DE MENSAJERÍA (SOLO MÉDICOS Y ENFERMEROS) ==========
-
-// API: Obtener mensajes recientes para el dashboard
-app.get('/api/mensajes/recientes', requireLogin, requireMedicoOrEnfermero, (req, res) => {
-  const usuarioId = req.session.user.id;
-  
-  const query = `
-    SELECT 
-      m.*,
-      u.nombre_usuario as remitente_nombre,
-      u.tipo_usuario as remitente_tipo,
-      CASE WHEN m.remitente_id = ? THEN true ELSE false END as es_remitente
-    FROM mensajes m
-    JOIN usuarios u ON m.remitente_id = u.id
-    WHERE m.destinatario_id = ? OR m.remitente_id = ?
-    ORDER BY m.fecha_envio DESC
-    LIMIT 5
-  `;
-  
-  db.query(query, [usuarioId, usuarioId, usuarioId], (err, results) => {
-    if (err) {
-      console.error('Error obteniendo mensajes recientes:', err);
-      return res.status(500).json({ error: 'Error en la base de datos' });
-    }
-    
-    res.json({ mensajes: results });
-  });
-});
-
-// API: Obtener contactos (conversaciones existentes) - solo médicos y enfermeros
+// ========== APIs DE MENSAJERÍA ==========
 app.get('/api/mensajes/contactos', requireLogin, requireMedicoOrEnfermero, (req, res) => {
   const usuarioId = req.session.user.id;
   
-  // Consulta para obtener contactos con los que hay conversación (solo médicos y enfermeros)
   const query = `
     SELECT DISTINCT 
       u.id,
@@ -3675,11 +4882,9 @@ app.get('/api/mensajes/contactos', requireLogin, requireMedicoOrEnfermero, (req,
     });
 });
 
-// API: Obtener destinatarios disponibles (para nuevo mensaje) - solo médicos y enfermeros
 app.get('/api/mensajes/destinatarios', requireLogin, requireMedicoOrEnfermero, (req, res) => {
   const usuarioId = req.session.user.id;
   
-  // SOLO médicos y enfermeros pueden ser destinatarios
   const query = `
     SELECT 
       u.id,
@@ -3703,12 +4908,10 @@ app.get('/api/mensajes/destinatarios', requireLogin, requireMedicoOrEnfermero, (
   });
 });
 
-// API: Obtener conversación con un contacto - solo entre médicos y enfermeros
 app.get('/api/mensajes/conversacion/:contactoId', requireLogin, requireMedicoOrEnfermero, (req, res) => {
   const usuarioId = req.session.user.id;
   const contactoId = req.params.contactoId;
   
-  // Verificar que el contacto sea médico o enfermero
   db.query('SELECT nombre_usuario, tipo_usuario FROM usuarios WHERE id = ?', [contactoId], (err, contactTypeResults) => {
     if (err || contactTypeResults.length === 0) {
       return res.status(404).json({ error: 'Contacto no encontrado' });
@@ -3716,7 +4919,6 @@ app.get('/api/mensajes/conversacion/:contactoId', requireLogin, requireMedicoOrE
     
     const contact = contactTypeResults[0];
     
-    // Obtener mensajes
     db.query(`
       SELECT 
         m.*,
@@ -3740,52 +4942,6 @@ app.get('/api/mensajes/conversacion/:contactoId', requireLogin, requireMedicoOrE
   });
 });
 
-// API: Enviar mensaje - solo médicos y enfermeros pueden enviar
-app.post('/api/mensajes/enviar', requireLogin, requireMedicoOrEnfermero, (req, res) => {
-  const usuarioId = req.session.user.id;
-  const usuarioTipo = req.session.user.tipo_usuario;
-  const { destinatario_id, asunto, mensaje } = req.body;
-  
-  if (!destinatario_id || !mensaje) {
-    return res.status(400).json({ error: 'Destinatario y mensaje son requeridos' });
-  }
-  
-  // Verificar que el remitente sea médico o enfermero
-  if (usuarioTipo === 'paciente') {
-    return res.status(403).json({ error: 'Los pacientes no pueden enviar mensajes' });
-  }
-  
-  // Verificar que el destinatario exista y sea médico o enfermero
-  db.query('SELECT tipo_usuario FROM usuarios WHERE id = ?', [destinatario_id], (err, results) => {
-    if (err || results.length === 0) {
-      return res.status(404).json({ error: 'Destinatario no encontrado' });
-    }
-    
-    const destinatarioTipo = results[0].tipo_usuario;
-    if (destinatarioTipo === 'paciente') {
-      return res.status(403).json({ error: 'No se puede enviar mensajes a pacientes' });
-    }
-    
-    // Insertar mensaje
-    db.query(`
-      INSERT INTO mensajes (remitente_id, destinatario_id, asunto, mensaje, fecha_envio)
-      VALUES (?, ?, ?, ?, NOW())
-    `, [usuarioId, destinatario_id, asunto || null, mensaje], (err, result) => {
-      if (err) {
-        console.error('Error enviando mensaje:', err);
-        return res.status(500).json({ error: 'Error al enviar mensaje' });
-      }
-      
-      res.json({ 
-        success: true, 
-        messageId: result.insertId,
-        message: 'Mensaje enviado correctamente'
-      });
-    });
-  });
-});
-
-// API: Marcar mensajes como leídos
 app.post('/api/mensajes/marcar-leidos/:contactoId', requireLogin, requireMedicoOrEnfermero, (req, res) => {
   const usuarioId = req.session.user.id;
   const contactoId = req.params.contactoId;
@@ -3806,7 +4962,6 @@ app.post('/api/mensajes/marcar-leidos/:contactoId', requireLogin, requireMedicoO
   });
 });
 
-// API: Obtener contador de mensajes no leídos
 app.get('/api/mensajes/contador-no-leidos', requireLogin, requireMedicoOrEnfermero, (req, res) => {
   const usuarioId = req.session.user.id;
   
@@ -3825,223 +4980,406 @@ app.get('/api/mensajes/contador-no-leidos', requireLogin, requireMedicoOrEnferme
   });
 });
 
-// ========== SISTEMA DE PROGRAMACIÓN DE CITAS ==========
+// ========== API PARA MENSAJES RECIENTES ==========
+app.get('/api/mensajes/recientes', requireLogin, requireMedicoOrEnfermero, (req, res) => {
+  const usuarioId = req.session.user.id;
 
-// Ruta para ver citas (para pacientes: sus citas, para médicos: todas las citas)
+  const query = `
+    SELECT 
+      m.*,
+      u.nombre_usuario as remitente_nombre,
+      CASE WHEN m.remitente_id = ? THEN 1 ELSE 0 END as es_remitente
+    FROM mensajes m
+    JOIN usuarios u ON m.remitente_id = u.id
+    WHERE m.destinatario_id = ? OR m.remitente_id = ?
+    ORDER BY m.fecha_envio DESC
+    LIMIT 10
+  `;
+
+  db.query(query, [usuarioId, usuarioId, usuarioId], (err, results) => {
+    if (err) {
+      console.error('Error obteniendo mensajes recientes:', err);
+      return res.status(500).json({ error: 'Error en la base de datos' });
+    }
+
+    res.json({ mensajes: results });
+  });
+});
+
+// ========== API PARA ENVIAR MENSAJES ==========
+app.post('/api/mensajes/enviar', requireLogin, requireMedicoOrEnfermero, (req, res) => {
+  const usuarioId = req.session.user.id;
+  const { destinatario_id, asunto, mensaje } = req.body;
+
+  if (!destinatario_id || !mensaje) {
+    return res.status(400).json({ success: false, error: 'Destinatario y mensaje son requeridos' });
+  }
+
+  // Verificar que el destinatario sea médico o enfermero
+  db.query('SELECT tipo_usuario FROM usuarios WHERE id = ?', [destinatario_id], (err, results) => {
+    if (err) {
+      console.error('Error verificando destinatario:', err);
+      return res.status(500).json({ success: false, error: 'Error en la base de datos' });
+    }
+
+    if (results.length === 0) {
+      return res.status(404).json({ success: false, error: 'Destinatario no encontrado' });
+    }
+
+    const destinatario = results[0];
+    if (destinatario.tipo_usuario !== 'medico' && destinatario.tipo_usuario !== 'enfermero') {
+      return res.status(400).json({ success: false, error: 'Solo puedes enviar mensajes a médicos o enfermeros' });
+    }
+
+    const query = `
+      INSERT INTO mensajes (remitente_id, destinatario_id, asunto, mensaje, fecha_envio, leido)
+      VALUES (?, ?, ?, ?, NOW(), FALSE)
+    `;
+
+    db.query(query, [usuarioId, destinatario_id, asunto || null, mensaje], (err, results) => {
+      if (err) {
+        console.error('Error enviando mensaje:', err);
+        return res.status(500).json({ success: false, error: 'Error en la base de datos' });
+      }
+
+      res.json({ success: true, message: 'Mensaje enviado correctamente', mensajeId: results.insertId });
+    });
+  });
+});
+
+// ========== SISTEMA DE PROGRAMACIÓN DE CITAS ==========
+// Rutas básicas de citas (simplificadas para que el código funcione)
+app.get('/ver-mis-citas', requireLogin, requireRole('paciente'), (req, res) => {
+  const user = req.session.user;
+  
+  db.query('SELECT id FROM pacientes WHERE usuario_id = ?', [user.id], (err, pacienteResults) => {
+    if (err || pacienteResults.length === 0) {
+      console.error('Error obteniendo ID de paciente:', err);
+      return res.status(500).send('Error al obtener información del paciente.');
+    }
+    
+    const pacienteId = pacienteResults[0].id;
+    
+    const query = `
+      SELECT 
+        c.*,
+        p.nombre as paciente_nombre,
+        u.nombre_usuario as medico_nombre
+      FROM citas c
+      LEFT JOIN pacientes p ON c.paciente_id = p.id
+      LEFT JOIN usuarios u ON c.medico_id = u.id
+      WHERE c.paciente_id = ?
+      ORDER BY c.fecha DESC, c.hora DESC
+    `;
+    
+    db.query(query, [pacienteId], (err, results) => {
+      if (err) {
+        console.error('Error obteniendo citas:', err);
+        return res.status(500).send('Error al obtener citas.');
+      }
+      
+      let html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <link rel="stylesheet" href="/styles.css">
+          <title>Mis Citas</title>
+          <style>
+            .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+            .cita-card {
+              background: white;
+              border-radius: 10px;
+              padding: 20px;
+              margin-bottom: 20px;
+              box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+              border-left: 5px solid;
+            }
+            .cita-card.pendiente { border-left-color: #FF9800; }
+            .cita-card.confirmada { border-left-color: #4CAF50; }
+            .cita-card.completada { border-left-color: #2196F3; }
+            .cita-card.cancelada { border-left-color: #F44336; }
+            .estado-badge {
+              padding: 5px 15px;
+              border-radius: 20px;
+              font-size: 14px;
+              font-weight: bold;
+            }
+            .pendiente-badge { background: #FFF3E0; color: #FF9800; }
+            .confirmada-badge { background: #E8F5E9; color: #4CAF50; }
+            .completada-badge { background: #E3F2FD; color: #2196F3; }
+            .cancelada-badge { background: #FFEBEE; color: #F44336; }
+            .sin-citas {
+              text-align: center;
+              padding: 50px;
+              color: #666;
+              font-size: 18px;
+            }
+          </style>
+        </head>
+        <body>
+          <div id="navbar-container"></div>
+          <div class="container">
+            <h1>📅 Mis Citas Programadas</h1>
+            
+            <div style="margin-bottom: 30px;">
+              <a href="/solicitar-cita" class="menu-btn" style="display: inline-block;">
+                ➕ Solicitar Nueva Cita
+              </a>
+            </div>
+      `;
+      
+      if (results.length > 0) {
+        results.forEach(cita => {
+          const fecha = new Date(cita.fecha).toLocaleDateString('es-ES', { 
+            weekday: 'long', 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric' 
+          });
+          
+          let estadoClass = '';
+          let estadoText = '';
+          switch(cita.estado) {
+            case 'pendiente':
+              estadoClass = 'pendiente-badge';
+              estadoText = '⏳ Pendiente';
+              break;
+            case 'confirmada':
+              estadoClass = 'confirmada-badge';
+              estadoText = '✅ Confirmada';
+              break;
+            case 'completada':
+              estadoClass = 'completada-badge';
+              estadoText = '✓ Completada';
+              break;
+            case 'cancelada':
+              estadoClass = 'cancelada-badge';
+              estadoText = '❌ Cancelada';
+              break;
+          }
+          
+          html += `
+            <div class="cita-card ${cita.estado}">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h3 style="margin: 0;">Cita con ${cita.medico_nombre || 'Médico'}</h3>
+                <span class="estado-badge ${estadoClass}">${estadoText}</span>
+              </div>
+              
+              <div style="margin-bottom: 10px;">
+                <strong>📅 Fecha:</strong> ${fecha}<br>
+                <strong>⏰ Hora:</strong> ${cita.hora}<br>
+                <strong>👨‍⚕️ Médico:</strong> ${cita.medico_nombre || 'No asignado'}<br>
+                <strong>📋 Tipo:</strong> ${cita.tipo_cita}<br>
+                <strong>📝 Motivo:</strong> ${cita.motivo || 'No especificado'}
+              </div>
+              
+              ${cita.notas ? `<div style="margin-bottom: 10px;"><strong>📄 Notas:</strong> ${cita.notas}</div>` : ''}
+              
+              <div style="font-size: 12px; color: #666;">
+                Creada: ${new Date(cita.fecha_creacion).toLocaleDateString('es-ES')}
+              </div>
+            </div>
+          `;
+        });
+      } else {
+        html += `
+          <div class="sin-citas">
+            <p>📭 No tienes citas programadas</p>
+            <p>¡Solicita tu primera cita médica!</p>
+            <a href="/solicitar-cita" class="menu-btn" style="display: inline-block; margin-top: 20px;">
+              ➕ Solicitar Mi Primera Cita
+            </a>
+          </div>
+        `;
+      }
+      
+      html += `
+            <div style="text-align: center; margin-top: 40px;">
+              <a href="/dashboard" class="menu-btn" style="display: inline-block; width: auto; padding: 12px 30px;">
+                ← Volver al inicio
+              </a>
+            </div>
+          </div>
+          
+          <script>
+            fetch('/navbar')
+              .then(response => response.text())
+              .then(html => {
+                document.getElementById('navbar-container').innerHTML = html;
+              })
+              .catch(error => console.error('Error cargando navbar:', error));
+          </script>
+        </body>
+        </html>
+      `;
+      
+      res.send(html);
+    });
+  });
+});
+
+app.get('/solicitar-cita', requireLogin, requireRole('paciente'), (req, res) => {
+  db.query('SELECT id, nombre_usuario FROM usuarios WHERE tipo_usuario = "medico"', (err, medicos) => {
+    if (err) {
+      console.error('Error obteniendo médicos:', err);
+      return res.status(500).send('Error al cargar el formulario.');
+    }
+    
+    let medicoOptions = '';
+    medicos.forEach(medico => {
+      medicoOptions += `<option value="${medico.id}">👨‍⚕️ ${medico.nombre_usuario}</option>`;
+    });
+    
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <link rel="stylesheet" href="/styles.css">
+        <title>Solicitar Cita</title>
+        <style>
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .form-group { margin-bottom: 20px; }
+          label { display: block; margin-bottom: 8px; font-weight: bold; }
+          input, select, textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+            box-sizing: border-box;
+          }
+          button {
+            background: #4CAF50;
+            color: white;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+          }
+          button:hover { background: #45a049; }
+          .info-text {
+            color: #666;
+            font-size: 14px;
+            margin-top: 5px;
+          }
+        </style>
+      </head>
+      <body>
+        <div id="navbar-container"></div>
+        <div class="container">
+          <h1>📅 Solicitar Nueva Cita</h1>
+          
+          <div id="message" style="margin-bottom: 20px;"></div>
+          
+          <form id="citaForm">
+            <div class="form-group">
+              <label for="medico_id">Selecciona Médico:</label>
+              <select id="medico_id" name="medico_id" required>
+                <option value="">Selecciona un médico</option>
+                ${medicoOptions}
+              </select>
+            </div>
+            
+            <div class="form-group">
+              <label for="fecha">Fecha de la Cita:</label>
+              <input type="date" id="fecha" name="fecha" required min="${new Date().toISOString().split('T')[0]}">
+              <div class="info-text">Selecciona una fecha futura</div>
+            </div>
+            
+            <div class="form-group">
+              <label for="hora">Hora de la Cita:</label>
+              <input type="time" id="hora" name="hora" required min="08:00" max="18:00">
+              <div class="info-text">Horario de atención: 8:00 AM - 6:00 PM</div>
+            </div>
+            
+            <div class="form-group">
+              <label for="tipo_cita">Tipo de Cita:</label>
+              <select id="tipo_cita" name="tipo_cita" required>
+                <option value="">Selecciona tipo</option>
+                <option value="Consulta General">Consulta General</option>
+                <option value="Control">Control</option>
+                <option value="Emergencia">Emergencia</option>
+                <option value="Examen">Examen</option>
+                <option value="Otro">Otro</option>
+              </select>
+            </div>
+            
+            <div class="form-group">
+              <label for="motivo">Motivo de la Cita:</label>
+              <textarea id="motivo" name="motivo" rows="4" required placeholder="Describe brevemente el motivo de tu cita..."></textarea>
+            </div>
+            
+            <div class="form-group">
+              <label for="notas">Notas Adicionales (opcional):</label>
+              <textarea id="notas" name="notas" rows="3" placeholder="Cualquier información adicional que quieras agregar..."></textarea>
+            </div>
+            
+            <button type="submit">📅 Solicitar Cita</button>
+          </form>
+          
+          <div style="text-align: center; margin-top: 20px;">
+            <a href="/ver-mis-citas">← Volver a Mis Citas</a>
+          </div>
+        </div>
+        
+        <script>
+          fetch('/navbar')
+            .then(response => response.text())
+            .then(html => {
+              document.getElementById('navbar-container').innerHTML = html;
+            })
+            .catch(error => console.error('Error cargando navbar:', error));
+          
+          document.getElementById('citaForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(this);
+            const data = Object.fromEntries(formData.entries());
+            
+            try {
+              const response = await fetch('/api/citas/solicitar', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+              });
+              
+              const result = await response.json();
+              
+              const messageDiv = document.getElementById('message');
+              if (result.success) {
+                messageDiv.innerHTML = '<div style="background: #e6ffe6; color: #008000; padding: 15px; border-radius: 5px; margin-bottom: 20px;">✅ ' + result.message + '</div>';
+                document.getElementById('citaForm').reset();
+                
+                setTimeout(() => {
+                  window.location.href = '/ver-mis-citas';
+                }, 3000);
+              } else {
+                messageDiv.innerHTML = '<div style="background: #ffe6e6; color: #ff0000; padding: 15px; border-radius: 5px; margin-bottom: 20px;">❌ ' + result.error + '</div>';
+              }
+            } catch (error) {
+              const messageDiv = document.getElementById('message');
+              messageDiv.innerHTML = '<div style="background: #ffe6e6; color: #ff0000; padding: 15px; border-radius: 5px; margin-bottom: 20px;">❌ Error de conexión: ' + error.message + '</div>';
+            }
+          });
+        </script>
+      </body>
+      </html>
+    `;
+    
+    res.send(html);
+  });
+});
+
 app.get('/ver-citas', requireLogin, (req, res) => {
   const user = req.session.user;
   
   if (user.tipo_usuario === 'paciente') {
-    // Obtener ID del paciente
-    db.query('SELECT id FROM pacientes WHERE usuario_id = ?', [user.id], (err, pacienteResults) => {
-      if (err || pacienteResults.length === 0) {
-        console.error('Error obteniendo ID de paciente:', err);
-        return res.status(500).send('Error al obtener información del paciente.');
-      }
-      
-      const pacienteId = pacienteResults[0].id;
-      
-      // Paciente: ver solo sus citas usando el ID del paciente
-      const query = `
-        SELECT 
-          c.*,
-          p.nombre as paciente_nombre,
-          u.nombre_usuario as medico_nombre
-        FROM citas c
-        LEFT JOIN pacientes p ON c.paciente_id = p.id
-        LEFT JOIN usuarios u ON c.medico_id = u.id
-        WHERE c.paciente_id = ?
-        ORDER BY c.fecha DESC, c.hora DESC
-      `;
-      
-      db.query(query, [pacienteId], (err, results) => {
-        if (err) {
-          console.error('Error obteniendo citas:', err);
-          return res.status(500).send('Error al obtener citas.');
-        }
-        
-        let html = `
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <link rel="stylesheet" href="/styles.css">
-            <title>Mis Citas</title>
-            <style>
-              .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-              .cita-card {
-                background: white;
-                border-radius: 10px;
-                padding: 20px;
-                margin-bottom: 20px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                border-left: 5px solid;
-              }
-              .cita-card.pendiente { border-left-color: #FF9800; }
-              .cita-card.confirmada { border-left-color: #4CAF50; }
-              .cita-card.completada { border-left-color: #2196F3; }
-              .cita-card.cancelada { border-left-color: #F44336; }
-              .estado-badge {
-                padding: 5px 15px;
-                border-radius: 20px;
-                font-size: 14px;
-                font-weight: bold;
-              }
-              .pendiente-badge { background: #FFF3E0; color: #FF9800; }
-              .confirmada-badge { background: #E8F5E9; color: #4CAF50; }
-              .completada-badge { background: #E3F2FD; color: #2196F3; }
-              .cancelada-badge { background: #FFEBEE; color: #F44336; }
-              .acciones {
-                margin-top: 15px;
-                display: flex;
-                gap: 10px;
-              }
-              .accion-btn {
-                padding: 8px 16px;
-                border: none;
-                border-radius: 5px;
-                cursor: pointer;
-                font-size: 14px;
-              }
-              .cancelar-btn { background: #F44336; color: white; }
-              .cancelar-btn:hover { background: #D32F2F; }
-              .sin-citas {
-                text-align: center;
-                padding: 50px;
-                color: #666;
-                font-size: 18px;
-              }
-            </style>
-          </head>
-          <body>
-            <div id="navbar-container"></div>
-            <div class="container">
-              <h1>📅 Mis Citas Programadas</h1>
-              
-              <div style="margin-bottom: 30px;">
-                <a href="/solicitar-cita" class="menu-btn" style="display: inline-block;">
-                  ➕ Solicitar Nueva Cita
-                </a>
-              </div>
-        `;
-        
-        if (results.length > 0) {
-          results.forEach(cita => {
-            const fecha = new Date(cita.fecha).toLocaleDateString('es-ES', { 
-              weekday: 'long', 
-              year: 'numeric', 
-              month: 'long', 
-              day: 'numeric' 
-            });
-            
-            let estadoClass = '';
-            let estadoText = '';
-            switch(cita.estado) {
-              case 'pendiente':
-                estadoClass = 'pendiente-badge';
-                estadoText = '⏳ Pendiente';
-                break;
-              case 'confirmada':
-                estadoClass = 'confirmada-badge';
-                estadoText = '✅ Confirmada';
-                break;
-              case 'completada':
-                estadoClass = 'completada-badge';
-                estadoText = '✓ Completada';
-                break;
-              case 'cancelada':
-                estadoClass = 'cancelada-badge';
-                estadoText = '❌ Cancelada';
-                break;
-            }
-            
-            html += `
-              <div class="cita-card ${cita.estado}">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                  <h3 style="margin: 0;">Cita con ${cita.medico_nombre || 'Médico'}</h3>
-                  <span class="estado-badge ${estadoClass}">${estadoText}</span>
-                </div>
-                
-                <div style="margin-bottom: 10px;">
-                  <strong>📅 Fecha:</strong> ${fecha}<br>
-                  <strong>⏰ Hora:</strong> ${cita.hora}<br>
-                  <strong>👨‍⚕️ Médico:</strong> ${cita.medico_nombre || 'No asignado'}<br>
-                  <strong>📋 Tipo:</strong> ${cita.tipo_cita}<br>
-                  <strong>📝 Motivo:</strong> ${cita.motivo || 'No especificado'}
-                </div>
-                
-                ${cita.notas ? `<div style="margin-bottom: 10px;"><strong>📄 Notas:</strong> ${cita.notas}</div>` : ''}
-                
-                <div style="font-size: 12px; color: #666;">
-                  Creada: ${new Date(cita.fecha_creacion).toLocaleDateString('es-ES')}
-                </div>
-                
-                ${cita.estado === 'pendiente' || cita.estado === 'confirmada' ? `
-                <div class="acciones">
-                  <button class="accion-btn cancelar-btn" onclick="cancelarCita(${cita.id})">
-                    ❌ Cancelar Cita
-                  </button>
-                </div>
-                ` : ''}
-              </div>
-            `;
-          });
-        } else {
-          html += `
-            <div class="sin-citas">
-              <p>📭 No tienes citas programadas</p>
-              <p>¡Solicita tu primera cita médica!</p>
-              <a href="/solicitar-cita" class="menu-btn" style="display: inline-block; margin-top: 20px;">
-                ➕ Solicitar Mi Primera Cita
-              </a>
-            </div>
-          `;
-        }
-        
-        html += `
-              <div style="text-align: center; margin-top: 40px;">
-                <a href="/dashboard" class="menu-btn" style="display: inline-block; width: auto; padding: 12px 30px;">
-                  ← Volver al inicio
-                </a>
-              </div>
-            </div>
-            
-            <script>
-              fetch('/navbar')
-                .then(response => response.text())
-                .then(html => {
-                  document.getElementById('navbar-container').innerHTML = html;
-                })
-                .catch(error => console.error('Error cargando navbar:', error));
-              
-              function cancelarCita(citaId) {
-                if (confirm('¿Estás seguro de cancelar esta cita?')) {
-                  fetch('/api/citas/cancelar/' + citaId, {
-                    method: 'POST'
-                  })
-                  .then(response => response.json())
-                  .then(data => {
-                    if (data.success) {
-                      alert('✅ Cita cancelada correctamente');
-                      location.reload();
-                    } else {
-                      alert('❌ Error: ' + (data.error || 'No se pudo cancelar la cita'));
-                    }
-                  })
-                  .catch(error => {
-                    alert('❌ Error de conexión');
-                  });
-                }
-              }
-            </script>
-          </body>
-          </html>
-        `;
-        
-        res.send(html);
-      });
-    });
+    return res.redirect('/ver-mis-citas');
   } else if (user.tipo_usuario === 'medico') {
-    // Médico: ver todas las citas
     const query = `
       SELECT 
         c.*,
@@ -4068,21 +5406,6 @@ app.get('/ver-citas', requireLogin, (req, res) => {
           <title>Citas Médicas</title>
           <style>
             .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-            .filtros {
-              background: #f8f9fa;
-              padding: 20px;
-              border-radius: 10px;
-              margin-bottom: 30px;
-              display: flex;
-              gap: 15px;
-              flex-wrap: wrap;
-              align-items: center;
-            }
-            .filtros select, .filtros input {
-              padding: 10px;
-              border: 1px solid #ddd;
-              border-radius: 5px;
-            }
             .citas-grid {
               display: grid;
               grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
@@ -4110,25 +5433,6 @@ app.get('/ver-citas', requireLogin, (req, res) => {
             .confirmada-badge { background: #E8F5E9; color: #4CAF50; }
             .completada-badge { background: #E3F2FD; color: #2196F3; }
             .cancelada-badge { background: #FFEBEE; color: #F44336; }
-            .acciones {
-              margin-top: 15px;
-              display: flex;
-              gap: 10px;
-              flex-wrap: wrap;
-            }
-            .accion-btn {
-              padding: 8px 16px;
-              border: none;
-              border-radius: 5px;
-              cursor: pointer;
-              font-size: 14px;
-            }
-            .confirmar-btn { background: #4CAF50; color: white; }
-            .confirmar-btn:hover { background: #388E3C; }
-            .completar-btn { background: #2196F3; color: white; }
-            .completar-btn:hover { background: #1976D2; }
-            .cancelar-btn { background: #F44336; color: white; }
-            .cancelar-btn:hover { background: #D32F2F; }
             .sin-citas {
               text-align: center;
               padding: 50px;
@@ -4136,45 +5440,12 @@ app.get('/ver-citas', requireLogin, (req, res) => {
               font-size: 18px;
               grid-column: 1 / -1;
             }
-            .search-box {
-              flex: 1;
-              min-width: 200px;
-            }
-            .search-box input {
-              width: 100%;
-              padding: 10px;
-              border: 1px solid #ddd;
-              border-radius: 5px;
-            }
           </style>
         </head>
         <body>
           <div id="navbar-container"></div>
           <div class="container">
             <h1>📅 Citas Médicas Programadas</h1>
-            
-            <div class="filtros">
-              <div class="search-box">
-                <input type="text" id="buscar" placeholder="🔍 Buscar por paciente, motivo...">
-              </div>
-              <div>
-                <select id="filtro-estado" onchange="filtrarCitas()">
-                  <option value="">Todos los estados</option>
-                  <option value="pendiente">⏳ Pendientes</option>
-                  <option value="confirmada">✅ Confirmadas</option>
-                  <option value="completada">✓ Completadas</option>
-                  <option value="cancelada">❌ Canceladas</option>
-                </select>
-              </div>
-              <div>
-                <input type="date" id="filtro-fecha" onchange="filtrarCitas()">
-              </div>
-              <div>
-                <button onclick="resetFiltros()" style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 5px; cursor: pointer;">
-                  🔄 Limpiar filtros
-                </button>
-              </div>
-            </div>
             
             <div class="citas-grid" id="citas-container">
       `;
@@ -4210,7 +5481,7 @@ app.get('/ver-citas', requireLogin, (req, res) => {
           }
           
           html += `
-            <div class="cita-card ${cita.estado}" data-estado="${cita.estado}" data-fecha="${cita.fecha}" data-paciente="${cita.paciente_nombre.toLowerCase()}">
+            <div class="cita-card ${cita.estado}">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                 <h3 style="margin: 0;">${cita.paciente_nombre || 'Paciente'}</h3>
                 <span class="estado-badge ${estadoClass}">${estadoText}</span>
@@ -4227,30 +5498,6 @@ app.get('/ver-citas', requireLogin, (req, res) => {
               
               <div style="font-size: 12px; color: #666;">
                 Creada: ${new Date(cita.fecha_creacion).toLocaleDateString('es-ES')}
-              </div>
-              
-              <div class="acciones">
-                ${cita.estado === 'pendiente' ? `
-                <button class="accion-btn confirmar-btn" onclick="cambiarEstadoCita(${cita.id}, 'confirmada')">
-                  ✅ Confirmar
-                </button>
-                ` : ''}
-                
-                ${cita.estado === 'confirmada' ? `
-                <button class="accion-btn completar-btn" onclick="cambiarEstadoCita(${cita.id}, 'completada')">
-                  ✓ Completar
-                </button>
-                ` : ''}
-                
-                ${cita.estado !== 'cancelada' && cita.estado !== 'completada' ? `
-                <button class="accion-btn cancelar-btn" onclick="cambiarEstadoCita(${cita.id}, 'cancelada')">
-                  ❌ Cancelar
-                </button>
-                ` : ''}
-                
-                <button class="accion-btn" onclick="editarNotasCita(${cita.id}, '${cita.notas || ''}')" style="background: #FF9800; color: white;">
-                  📝 Notas
-                </button>
               </div>
             </div>
           `;
@@ -4281,113 +5528,6 @@ app.get('/ver-citas', requireLogin, (req, res) => {
                 document.getElementById('navbar-container').innerHTML = html;
               })
               .catch(error => console.error('Error cargando navbar:', error));
-            
-            function filtrarCitas() {
-              const busqueda = document.getElementById('buscar').value.toLowerCase();
-              const estado = document.getElementById('filtro-estado').value;
-              const fecha = document.getElementById('filtro-fecha').value;
-              
-              const citas = document.querySelectorAll('.cita-card');
-              citas.forEach(cita => {
-                const citaEstado = cita.getAttribute('data-estado');
-                const citaFecha = cita.getAttribute('data-fecha');
-                const citaPaciente = cita.getAttribute('data-paciente');
-                const citaTexto = cita.textContent.toLowerCase();
-                
-                let mostrar = true;
-                
-                // Filtrar por búsqueda
-                if (busqueda && !citaTexto.includes(busqueda) && !citaPaciente.includes(busqueda)) {
-                  mostrar = false;
-                }
-                
-                // Filtrar por estado
-                if (estado && citaEstado !== estado) {
-                  mostrar = false;
-                }
-                
-                // Filtrar por fecha
-                if (fecha && citaFecha !== fecha) {
-                  mostrar = false;
-                }
-                
-                cita.style.display = mostrar ? '' : 'none';
-              });
-            }
-            
-            function resetFiltros() {
-              document.getElementById('buscar').value = '';
-              document.getElementById('filtro-estado').value = '';
-              document.getElementById('filtro-fecha').value = '';
-              
-              const citas = document.querySelectorAll('.cita-card');
-              citas.forEach(cita => {
-                cita.style.display = '';
-              });
-            }
-            
-            function cambiarEstadoCita(citaId, nuevoEstado) {
-              const estados = {
-                'confirmada': 'Confirmar',
-                'completada': 'Completar',
-                'cancelada': 'Cancelar'
-              };
-              
-             if (confirm('¿Estás seguro de ' + (estados[nuevoEstado] || 'cambiar el estado de') + ' esta cita?')) {
-
-                fetch('/api/citas/cambiar-estado/' + citaId, {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json'
-                  },
-                  body: JSON.stringify({ estado: nuevoEstado })
-                })
-                .then(response => response.json())
-                .then(data => {
-                  if (data.success) {
-                    alert('✅ Estado actualizado correctamente');
-                    location.reload();
-                  } else {
-                    alert('❌ Error: ' + (data.error || 'No se pudo actualizar el estado'));
-                  }
-                })
-                .catch(error => {
-                  alert('❌ Error de conexión');
-                });
-              }
-            }
-            
-            function editarNotasCita(citaId, notasActuales) {
-              const nuevasNotas = prompt('Editar notas de la cita:', notasActuales);
-              if (nuevasNotas !== null) {
-                fetch('/api/citas/editar-notas/' + citaId, {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json'
-                  },
-                  body: JSON.stringify({ notas: nuevasNotas })
-                })
-                .then(response => response.json())
-                .then(data => {
-                  if (data.success) {
-                    alert('✅ Notas actualizadas correctamente');
-                    location.reload();
-                  } else {
-                    alert('❌ Error: ' + (data.error || 'No se pudieron actualizar las notas'));
-                  }
-                })
-                .catch(error => {
-                  alert('❌ Error de conexión');
-                });
-              }
-            }
-            
-            // Configurar búsqueda en tiempo real
-            document.getElementById('buscar').addEventListener('keyup', filtrarCitas);
-            document.getElementById('buscar').addEventListener('search', filtrarCitas);
-            
-            // Establecer fecha mínima para el filtro
-            document.getElementById('filtro-fecha').min = new Date().toISOString().split('T')[0];
           </script>
         </body>
         </html>
@@ -4400,883 +5540,11 @@ app.get('/ver-citas', requireLogin, (req, res) => {
   }
 });
 
-// Ruta para que pacientes soliciten citas
-app.get('/solicitar-cita', requireLogin, requireRole('paciente'), (req, res) => {
-  const user = req.session.user;
-  
-  // Obtener médicos disponibles
-  db.query('SELECT id, nombre_usuario FROM usuarios WHERE tipo_usuario = "medico"', (err, medicos) => {
-    if (err) {
-      console.error('Error obteniendo médicos:', err);
-      return res.status(500).send('Error al cargar el formulario.');
-    }
-    
-    let html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <link rel="stylesheet" href="/styles.css">
-        <title>Solicitar Cita Médica</title>
-        <style>
-          .container { 
-            max-width: 600px; 
-            margin: 0 auto; 
-            padding: 30px;
-            background: white;
-            border-radius: 10px;
-            box-shadow: 0 0 20px rgba(0,0,0,0.1);
-          }
-          .form-group {
-            margin-bottom: 20px;
-          }
-          label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: bold;
-            color: #333;
-          }
-          input, select, textarea {
-            width: 100%;
-            padding: 12px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            font-size: 16px;
-            box-sizing: border-box;
-          }
-          textarea {
-            min-height: 100px;
-            resize: vertical;
-          }
-          button {
-            background: #4CAF50;
-            color: white;
-            padding: 12px 25px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 16px;
-            width: 100%;
-          }
-          button:hover {
-            background: #45a049;
-          }
-          .info-text {
-            color: #666;
-            font-size: 14px;
-            margin-top: 5px;
-          }
-          .error-message {
-            color: #ff0000;
-            background: #ffe6e6;
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-          }
-          .success-message {
-            color: #008000;
-            background: #e6ffe6;
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-          }
-          .horario-info {
-            background: #e8f4fd;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-            border-left: 4px solid #2196F3;
-          }
-        </style>
-      </head>
-      <body>
-        <div id="navbar-container"></div>
-        <div class="container">
-          <h2>📅 Solicitar Nueva Cita Médica</h2>
-          
-          <div id="message"></div>
-          
-          <form id="citaForm">
-            <div class="form-group">
-              <label for="medico_id">👨‍⚕️ Seleccionar Médico:</label>
-              <select id="medico_id" name="medico_id" required>
-                <option value="">-- Selecciona un médico --</option>
-    `;
-    
-    medicos.forEach(medico => {
-      html += `<option value="${medico.id}">${medico.nombre_usuario}</option>`;
-    });
-    
-    html += `
-              </select>
-              <div class="info-text">Elige el médico con el que deseas la consulta</div>
-            </div>
-            
-            <div class="form-group">
-              <label for="fecha">📅 Fecha de la Cita:</label>
-              <input type="date" id="fecha" name="fecha" required 
-                     min="${new Date().toISOString().split('T')[0]}">
-              <div class="info-text">Selecciona la fecha para tu cita</div>
-            </div>
-            
-            <div class="form-group">
-              <label for="hora">⏰ Hora de la Cita:</label>
-              <input type="time" id="hora" name="hora" required 
-                     min="08:00" max="18:00" step="900">
-              <div class="info-text">Horario de atención: 8:00 AM - 6:00 PM (en intervalos de 15 min)</div>
-            </div>
-            
-            <div class="form-group">
-              <label for="tipo_cita">📋 Tipo de Consulta:</label>
-              <select id="tipo_cita" name="tipo_cita" required>
-                <option value="">-- Selecciona el tipo --</option>
-                <option value="Consulta General">Consulta General</option>
-                <option value="Control Rutinario">Control Rutinario</option>
-                <option value="Seguimiento">Seguimiento</option>
-                <option value="Urgencia">Urgencia</option>
-                <option value="Especialidad">Especialidad</option>
-                <option value="Otro">Otro</option>
-              </select>
-              <div class="info-text">Especifica el tipo de consulta que necesitas</div>
-            </div>
-            
-            <div class="form-group">
-              <label for="motivo">📝 Motivo de la Consulta:</label>
-              <textarea id="motivo" name="motivo" required 
-                        placeholder="Describe brevemente el motivo de tu consulta..."></textarea>
-              <div class="info-text">Esta información ayudará al médico a prepararse</div>
-            </div>
-            
-            <div class="horario-info">
-              <strong>📋 Información importante:</strong>
-              <ul style="margin: 10px 0; padding-left: 20px;">
-                <li>Las citas tienen una duración de 30 minutos</li>
-                <li>Recibirás confirmación por parte del médico</li>
-                <li>Puedes cancelar o modificar hasta 24 horas antes</li>
-                <li>Llega 10 minutos antes de tu cita</li>
-              </ul>
-            </div>
-            
-            <button type="submit">📅 Solicitar Cita</button>
-          </form>
-          
-          <div style="text-align: center; margin-top: 30px;">
-            <a href="/ver-mis-citas" style="color: #0066cc; text-decoration: none;">
-              ← Ver mis citas programadas
-            </a>
-          </div>
-        </div>
-        
-        <script>
-          fetch('/navbar')
-            .then(response => response.text())
-            .then(html => {
-              document.getElementById('navbar-container').innerHTML = html;
-            })
-            .catch(error => {
-              console.error('Error cargando navbar:', error);
-              document.getElementById('navbar-container').innerHTML = 
-                '<nav><ul><li><a href="/dashboard">🏠 Inicio</a></li><li><a href="/logout">🚪 Cerrar Sesión</a></li></ul></nav>';
-            });
-          
-          document.getElementById('citaForm').addEventListener('submit', async function(e) {
-            e.preventDefault();
-            
-            const formData = new FormData(this);
-            const data = Object.fromEntries(formData.entries());
-            
-            // Validar hora
-            const hora = data.hora;
-            const horaNum = parseInt(hora.split(':')[0]);
-            if (horaNum < 8 || horaNum > 18) {
-              showMessage('❌ La hora debe estar entre 8:00 y 18:00', 'error');
-              return;
-            }
-            
-            // Validar fecha
-            const fechaSeleccionada = new Date(data.fecha);
-            const hoy = new Date();
-            hoy.setHours(0, 0, 0, 0);
-            
-            if (fechaSeleccionada < hoy) {
-              showMessage('❌ No puedes solicitar citas en fechas pasadas', 'error');
-              return;
-            }
-            
-            // Calcular fecha límite (2 semanas)
-            const fechaLimite = new Date();
-            fechaLimite.setDate(fechaLimite.getDate() + 14);
-            
-            if (fechaSeleccionada > fechaLimite) {
-              showMessage('❌ Solo puedes solicitar citas con máximo 2 semanas de anticipación', 'error');
-              return;
-            }
-            
-            showMessage('⏳ Enviando solicitud de cita...', 'info');
-            
-            try {
-              const response = await fetch('/api/citas/solicitar', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(data)
-              });
-              
-              if (response.ok) {
-                const result = await response.json();
-                if (result.success) {
-                  showMessage('✅ ' + result.message, 'success');
-                  // Limpiar formulario
-                  document.getElementById('citaForm').reset();
-                  // Redirigir después de 2 segundos
-                  setTimeout(() => {
-                    window.location.href = '/ver-mis-citas';
-                  }, 2000);
-                } else {
-                  showMessage('❌ ' + result.error, 'error');
-                }
-              } else {
-                const error = await response.json();
-                showMessage('❌ ' + (error.error || 'Error en el servidor'), 'error');
-              }
-            } catch (error) {
-              showMessage('❌ Error de conexión: ' + error.message, 'error');
-            }
-          });
-          
-          function showMessage(text, type) {
-            const messageDiv = document.getElementById('message');
-            messageDiv.innerHTML = \`<div class="\${type}-message">\${text}</div>\`;
-          }
-          
-          // Establecer fecha mínima (hoy)
-          const today = new Date().toISOString().split('T')[0];
-          document.getElementById('fecha').min = today;
-          
-          // Establecer fecha máxima (2 semanas)
-          const maxDate = new Date();
-          maxDate.setDate(maxDate.getDate() + 14);
-          document.getElementById('fecha').max = maxDate.toISOString().split('T')[0];
-        </script>
-      </body>
-      </html>
-    `;
-    
-    res.send(html);
-  });
-});
-
-// Alias para ver-mis-citas (para pacientes)
-app.get('/ver-mis-citas', requireLogin, requireRole('paciente'), (req, res) => {
-  res.redirect('/ver-citas');
-});
-
-// Ruta para que médicos vean citas pendientes
-app.get('/ver-citas-pendientes', requireLogin, requireRole('medico'), (req, res) => {
-  const user = req.session.user;
-  
-  const query = `
-    SELECT 
-      c.*,
-      p.nombre as paciente_nombre,
-      u.nombre_usuario as medico_nombre
-    FROM citas c
-    LEFT JOIN pacientes p ON c.paciente_id = p.id
-    LEFT JOIN usuarios u ON c.medico_id = u.id
-    WHERE c.medico_id = ? AND c.estado = 'pendiente'
-    ORDER BY c.fecha ASC, c.hora ASC
-  `;
-  
-  db.query(query, [user.id], (err, results) => {
-    if (err) {
-      console.error('Error obteniendo citas pendientes:', err);
-      return res.status(500).send('Error al obtener citas.');
-    }
-    
-    let html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <link rel="stylesheet" href="/styles.css">
-        <title>Citas Pendientes</title>
-        <style>
-          .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-          .cita-card {
-            background: white;
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            border-left: 5px solid #FF9800;
-          }
-          .estado-badge {
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-size: 14px;
-            font-weight: bold;
-            background: #FFF3E0;
-            color: #FF9800;
-            display: inline-block;
-          }
-          .acciones {
-            margin-top: 15px;
-            display: flex;
-            gap: 10px;
-          }
-          .accion-btn {
-            padding: 8px 16px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 14px;
-          }
-          .confirmar-btn { background: #4CAF50; color: white; }
-          .confirmar-btn:hover { background: #388E3C; }
-          .cancelar-btn { background: #F44336; color: white; }
-          .cancelar-btn:hover { background: #D32F2F; }
-          .sin-citas {
-            text-align: center;
-            padding: 50px;
-            color: #666;
-            font-size: 18px;
-          }
-        </style>
-      </head>
-      <body>
-        <div id="navbar-container"></div>
-        <div class="container">
-          <h1>⏳ Citas Pendientes de Confirmación</h1>
-    `;
-    
-    if (results.length > 0) {
-      results.forEach(cita => {
-        const fecha = new Date(cita.fecha).toLocaleDateString('es-ES', { 
-          weekday: 'long', 
-          year: 'numeric', 
-          month: 'long', 
-          day: 'numeric' 
-        });
-        
-        html += `
-          <div class="cita-card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-              <h3 style="margin: 0;">${cita.paciente_nombre || 'Paciente'}</h3>
-              <span class="estado-badge">⏳ Pendiente</span>
-            </div>
-            
-            <div style="margin-bottom: 10px;">
-              <strong>📅 Fecha:</strong> ${fecha}<br>
-              <strong>⏰ Hora:</strong> ${cita.hora}<br>
-              <strong>📋 Tipo:</strong> ${cita.tipo_cita}<br>
-              <strong>📝 Motivo:</strong> ${cita.motivo || 'No especificado'}
-            </div>
-            
-            ${cita.notas ? `<div style="margin-bottom: 10px;"><strong>📄 Notas:</strong> ${cita.notas}</div>` : ''}
-            
-            <div style="font-size: 12px; color: #666;">
-              Solicitada: ${new Date(cita.fecha_creacion).toLocaleDateString('es-ES')}
-            </div>
-            
-            <div class="acciones">
-              <button class="accion-btn confirmar-btn" onclick="cambiarEstadoCita(${cita.id}, 'confirmada')">
-                ✅ Confirmar Cita
-              </button>
-              <button class="accion-btn cancelar-btn" onclick="cambiarEstadoCita(${cita.id}, 'cancelada')">
-                ❌ Rechazar Cita
-              </button>
-              <button class="accion-btn" onclick="editarNotasCita(${cita.id}, '${cita.notas || ''}')" style="background: #FF9800; color: white;">
-                📝 Agregar Notas
-              </button>
-            </div>
-          </div>
-        `;
-      });
-    } else {
-      html += `
-        <div class="sin-citas">
-          <p>🎉 No tienes citas pendientes de confirmación</p>
-          <p>Todas tus citas están confirmadas o procesadas</p>
-        </div>
-      `;
-    }
-    
-    html += `
-          <div style="text-align: center; margin-top: 40px;">
-            <a href="/ver-citas" class="menu-btn" style="display: inline-block; width: auto; padding: 12px 30px;">
-              ← Ver todas las citas
-            </a>
-          </div>
-        </div>
-        
-        <script>
-          fetch('/navbar')
-            .then(response => response.text())
-            .then(html => {
-              document.getElementById('navbar-container').innerHTML = html;
-            })
-            .catch(error => console.error('Error cargando navbar:', error));
-          
-          function cambiarEstadoCita(citaId, nuevoEstado) {
-            const accion = nuevoEstado === 'confirmada' ? 'confirmar' : 'rechazar';
-            
-            if (confirm(\`¿Estás seguro de \${accion} esta cita?\`)) {
-              fetch('/api/citas/cambiar-estado/' + citaId, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ estado: nuevoEstado })
-              })
-              .then(response => response.json())
-              .then(data => {
-                if (data.success) {
-                  alert('✅ Cita ' + (nuevoEstado === 'confirmada' ? 'confirmada' : 'rechazada') + ' correctamente');
-                  location.reload();
-                } else {
-                  alert('❌ Error: ' + (data.error || 'No se pudo actualizar el estado'));
-                }
-              })
-              .catch(error => {
-                alert('❌ Error de conexión');
-              });
-            }
-          }
-          
-          function editarNotasCita(citaId, notasActuales) {
-            const nuevasNotas = prompt('Agregar o editar notas para esta cita:', notasActuales);
-            if (nuevasNotas !== null) {
-              fetch('/api/citas/editar-notas/' + citaId, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ notas: nuevasNotas })
-              })
-              .then(response => response.json())
-              .then(data => {
-                if (data.success) {
-                  alert('✅ Notas actualizadas correctamente');
-                  location.reload();
-                } else {
-                  alert('❌ Error: ' + (data.error || 'No se pudieron actualizar las notas'));
-                }
-              })
-              .catch(error => {
-                alert('❌ Error de conexión');
-              });
-            }
-          }
-        </script>
-      </body>
-      </html>
-    `;
-    
-    res.send(html);
-  });
-});
-
-// Ruta para que médicos gestionen sus horarios
-app.get('/horarios-medico', requireLogin, requireRole('medico'), (req, res) => {
-  // Crear tabla horarios_medicos si no existe
-  const createHorariosTable = `
-    CREATE TABLE IF NOT EXISTS horarios_medicos (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      medico_id INT NOT NULL,
-      dia_semana INT NOT NULL,
-      hora_inicio TIME NOT NULL,
-      hora_fin TIME NOT NULL,
-      duracion_cita INT DEFAULT 30,
-      activo BOOLEAN DEFAULT TRUE,
-      FOREIGN KEY (medico_id) REFERENCES usuarios(id)
-    )
-  `;
-  
-  db.query(createHorariosTable, (err) => {
-    if (err) {
-      console.error('Error creando tabla horarios_medicos:', err);
-    }
-    
-    const user = req.session.user;
-    
-    // Obtener horarios actuales del médico
-    const query = `
-      SELECT * FROM horarios_medicos 
-      WHERE medico_id = ? 
-      ORDER BY dia_semana ASC, hora_inicio ASC
-    `;
-    
-    db.query(query, [user.id], (err, horarios) => {
-      if (err) {
-        console.error('Error obteniendo horarios:', err);
-        return res.status(500).send('Error al cargar horarios.');
-      }
-      
-      const diasSemana = [
-        { id: 1, nombre: 'Lunes' },
-        { id: 2, nombre: 'Martes' },
-        { id: 3, nombre: 'Miércoles' },
-        { id: 4, nombre: 'Jueves' },
-        { id: 5, nombre: 'Viernes' },
-        { id: 6, nombre: 'Sábado' },
-        { id: 7, nombre: 'Domingo' }
-      ];
-      
-      let html = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <link rel="stylesheet" href="/styles.css">
-          <title>Gestionar Horarios</title>
-          <style>
-            .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-            .horarios-container {
-              display: grid;
-              grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-              gap: 20px;
-              margin-bottom: 40px;
-            }
-            .dia-card {
-              background: white;
-              border-radius: 10px;
-              padding: 20px;
-              box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            }
-            .dia-header {
-              display: flex;
-              justify-content: space-between;
-              align-items: center;
-              margin-bottom: 15px;
-              padding-bottom: 10px;
-              border-bottom: 2px solid #f0f0f0;
-            }
-            .horario-item {
-              background: #f8f9fa;
-              padding: 10px;
-              border-radius: 5px;
-              margin-bottom: 10px;
-              display: flex;
-              justify-content: space-between;
-              align-items: center;
-            }
-            .horario-info {
-              font-size: 14px;
-            }
-            .horario-acciones button {
-              padding: 5px 10px;
-              border: none;
-              border-radius: 3px;
-              cursor: pointer;
-              font-size: 12px;
-              margin-left: 5px;
-            }
-            .btn-eliminar {
-              background: #F44336;
-              color: white;
-            }
-            .btn-desactivar {
-              background: #FF9800;
-              color: white;
-            }
-            .btn-activar {
-              background: #4CAF50;
-              color: white;
-            }
-            .sin-horarios {
-              color: #666;
-              font-style: italic;
-              text-align: center;
-              padding: 20px;
-            }
-            .form-agregar {
-              background: #e8f4fd;
-              padding: 20px;
-              border-radius: 10px;
-              margin-bottom: 30px;
-            }
-            .form-row {
-              display: flex;
-              gap: 15px;
-              margin-bottom: 15px;
-              flex-wrap: wrap;
-            }
-            .form-group {
-              flex: 1;
-              min-width: 200px;
-            }
-            .form-group label {
-              display: block;
-              margin-bottom: 5px;
-              font-weight: bold;
-            }
-            .form-group input, .form-group select {
-              width: 100%;
-              padding: 10px;
-              border: 1px solid #ddd;
-              border-radius: 5px;
-            }
-            .btn-submit {
-              background: #2196F3;
-              color: white;
-              padding: 12px 25px;
-              border: none;
-              border-radius: 5px;
-              cursor: pointer;
-              font-size: 16px;
-            }
-            .btn-submit:hover {
-              background: #1976D2;
-            }
-            .info-box {
-              background: #e8f5e9;
-              padding: 15px;
-              border-radius: 5px;
-              margin-bottom: 20px;
-              border-left: 4px solid #4CAF50;
-            }
-          </style>
-        </head>
-        <body>
-          <div id="navbar-container"></div>
-          <div class="container">
-            <h1>⏰ Gestionar Horarios de Atención</h1>
-            
-            <div class="info-box">
-              <p><strong>📋 Instrucciones:</strong></p>
-              <ul style="margin: 10px 0; padding-left: 20px;">
-                <li>Configura tus horarios de atención por día de la semana</li>
-                <li>Los pacientes solo podrán solicitar citas en estos horarios</li>
-                <li>Puedes tener múltiples franjas horarias por día</li>
-                <li>La duración predeterminada de cada cita es de 30 minutos</li>
-              </ul>
-            </div>
-            
-            <div class="form-agregar">
-              <h3>➕ Agregar Nuevo Horario</h3>
-              <form id="formHorario">
-                <div class="form-row">
-                  <div class="form-group">
-                    <label for="dia_semana">📅 Día de la semana:</label>
-                    <select id="dia_semana" name="dia_semana" required>
-                      <option value="">-- Selecciona un día --</option>
-      `;
-      
-      diasSemana.forEach(dia => {
-        html += `<option value="${dia.id}">${dia.nombre}</option>`;
-      });
-      
-      html += `
-                    </select>
-                  </div>
-                  
-                  <div class="form-group">
-                    <label for="hora_inicio">⏰ Hora de inicio:</label>
-                    <input type="time" id="hora_inicio" name="hora_inicio" required 
-                           min="08:00" max="20:00" step="900">
-                  </div>
-                  
-                  <div class="form-group">
-                    <label for="hora_fin">⏰ Hora de fin:</label>
-                    <input type="time" id="hora_fin" name="hora_fin" required 
-                           min="08:00" max="20:00" step="900">
-                  </div>
-                </div>
-                
-                <div class="form-row">
-                  <div class="form-group">
-                    <label for="duracion_cita">⏱️ Duración de cita (minutos):</label>
-                    <input type="number" id="duracion_cita" name="duracion_cita" 
-                           value="30" min="15" max="120" step="5">
-                  </div>
-                  
-                  <div class="form-group" style="align-self: flex-end;">
-                    <button type="submit" class="btn-submit">
-                      💾 Guardar Horario
-                    </button>
-                  </div>
-                </div>
-              </form>
-            </div>
-            
-            <h2>📋 Horarios Configurados</h2>
-            <div class="horarios-container">
-      `;
-      
-      // Agrupar horarios por día
-      const horariosPorDia = {};
-      horarios.forEach(horario => {
-        if (!horariosPorDia[horario.dia_semana]) {
-          horariosPorDia[horario.dia_semana] = [];
-        }
-        horariosPorDia[horario.dia_semana].push(horario);
-      });
-      
-      diasSemana.forEach(dia => {
-        const horariosDia = horariosPorDia[dia.id] || [];
-        
-        html += `
-          <div class="dia-card">
-            <div class="dia-header">
-              <h3 style="margin: 0;">${dia.nombre}</h3>
-              <span style="font-size: 12px; color: #666;">${horariosDia.length} horario(s)</span>
-            </div>
-        `;
-        
-        if (horariosDia.length > 0) {
-          horariosDia.forEach(horario => {
-            const estado = horario.activo ? '✅ Activo' : '⏸️ Inactivo';
-            const btnEstado = horario.activo 
-              ? `<button class="btn-desactivar" onclick="cambiarEstadoHorario(${horario.id}, false)">⏸️ Desactivar</button>`
-              : `<button class="btn-activar" onclick="cambiarEstadoHorario(${horario.id}, true)">✅ Activar</button>`;
-            
-            html += `
-              <div class="horario-item">
-                <div class="horario-info">
-                  <strong>${horario.hora_inicio} - ${horario.hora_fin}</strong><br>
-                  <small>Duración: ${horario.duracion_cita} min • ${estado}</small>
-                </div>
-                <div class="horario-acciones">
-                  ${btnEstado}
-                  <button class="btn-eliminar" onclick="eliminarHorario(${horario.id})">🗑️</button>
-                </div>
-              </div>
-            `;
-          });
-        } else {
-          html += `
-            <div class="sin-horarios">
-              <p>No hay horarios configurados</p>
-              <small>Agrega un horario usando el formulario</small>
-            </div>
-          `;
-        }
-        
-        html += `</div>`;
-      });
-      
-      html += `
-            </div>
-            
-            <div style="text-align: center; margin-top: 40px;">
-              <a href="/dashboard" class="menu-btn" style="display: inline-block; width: auto; padding: 12px 30px;">
-                ← Volver al inicio
-              </a>
-            </div>
-          </div>
-          
-          <script>
-            fetch('/navbar')
-              .then(response => response.text())
-              .then(html => {
-                document.getElementById('navbar-container').innerHTML = html;
-              })
-              .catch(error => console.error('Error cargando navbar:', error));
-            
-            document.getElementById('formHorario').addEventListener('submit', async function(e) {
-              e.preventDefault();
-              
-              const formData = new FormData(this);
-              const data = Object.fromEntries(formData.entries());
-              
-              // Validar horas
-              const horaInicio = new Date('2000-01-01T' + data.hora_inicio + ':00');
-              const horaFin = new Date('2000-01-01T' + data.hora_fin + ':00');
-              
-              if (horaFin <= horaInicio) {
-                alert('❌ La hora de fin debe ser posterior a la hora de inicio');
-                return;
-              }
-              
-              // Validar duración
-              if (data.duracion_cita < 15 || data.duracion_cita > 120) {
-                alert('❌ La duración debe estar entre 15 y 120 minutos');
-                return;
-              }
-              
-              try {
-                const response = await fetch('/api/horarios/agregar', {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json'
-                  },
-                  body: JSON.stringify(data)
-                });
-                
-                if (response.ok) {
-                  const result = await response.json();
-                  if (result.success) {
-                    alert('✅ Horario agregado correctamente');
-                    location.reload();
-                  } else {
-                    alert('❌ ' + result.error);
-                  }
-                } else {
-                  const error = await response.json();
-                  alert('❌ ' + (error.error || 'Error en el servidor'));
-                }
-              } catch (error) {
-                alert('❌ Error de conexión: ' + error.message);
-              }
-            });
-            
-            function cambiarEstadoHorario(horarioId, activo) {
-              fetch('/api/horarios/cambiar-estado/' + horarioId, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ activo: activo })
-              })
-              .then(response => response.json())
-              .then(data => {
-                if (data.success) {
-                  alert('✅ Estado actualizado correctamente');
-                  location.reload();
-                } else {
-                  alert('❌ Error: ' + (data.error || 'No se pudo actualizar el estado'));
-                }
-              })
-              .catch(error => {
-                alert('❌ Error de conexión');
-              });
-            }
-            
-            function eliminarHorario(horarioId) {
-              if (confirm('¿Estás seguro de eliminar este horario?')) {
-                fetch('/api/horarios/eliminar/' + horarioId, {
-                  method: 'DELETE'
-                })
-                .then(response => response.json())
-                .then(data => {
-                  if (data.success) {
-                    alert('✅ Horario eliminado correctamente');
-                    location.reload();
-                  } else {
-                    alert('❌ Error: ' + (data.error || 'No se pudo eliminar el horario'));
-                  }
-                })
-                .catch(error => {
-                  alert('❌ Error de conexión');
-                });
-              }
-            }
-          </script>
-        </body>
-        </html>
-      `;
-      
-      res.send(html);
-    });
-  });
-});
-
-// ========== APIs PARA CITAS ==========
-
-// API: Solicitar cita (pacientes)
+// ========== APIS PARA CITAS ==========
 app.post('/api/citas/solicitar', requireLogin, requireRole('paciente'), async (req, res) => {
   const user = req.session.user;
   const { medico_id, fecha, hora, tipo_cita, motivo, notas } = req.body;
   
-  // Validaciones
   if (!medico_id || !fecha || !hora || !tipo_cita || !motivo) {
     return res.status(400).json({ 
       success: false, 
@@ -5284,7 +5552,6 @@ app.post('/api/citas/solicitar', requireLogin, requireRole('paciente'), async (r
     });
   }
   
-  // Verificar que la fecha no sea pasada
   const fechaCita = new Date(fecha);
   const hoy = new Date();
   hoy.setHours(0, 0, 0, 0);
@@ -5297,7 +5564,6 @@ app.post('/api/citas/solicitar', requireLogin, requireRole('paciente'), async (r
   }
   
   try {
-    // Obtener ID del paciente
     const pacienteResult = await new Promise((resolve, reject) => {
       db.query('SELECT id FROM pacientes WHERE usuario_id = ?', [user.id], (err, results) => {
         if (err) reject(err);
@@ -5314,7 +5580,6 @@ app.post('/api/citas/solicitar', requireLogin, requireRole('paciente'), async (r
     
     const paciente_id = pacienteResult[0].id;
     
-    // Verificar que el médico exista
     const medicoResult = await new Promise((resolve, reject) => {
       db.query('SELECT id FROM usuarios WHERE id = ? AND tipo_usuario = "medico"', [medico_id], (err, results) => {
         if (err) reject(err);
@@ -5329,7 +5594,6 @@ app.post('/api/citas/solicitar', requireLogin, requireRole('paciente'), async (r
       });
     }
     
-    // Verificar si ya existe una cita en esa fecha y hora con ese médico
     const checkQuery = `
       SELECT id FROM citas 
       WHERE medico_id = ? 
@@ -5352,33 +5616,6 @@ app.post('/api/citas/solicitar', requireLogin, requireRole('paciente'), async (r
       });
     }
     
-    // Crear tabla citas si no existe
-    const createCitasTable = `
-      CREATE TABLE IF NOT EXISTS citas (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        paciente_id INT NOT NULL,
-        medico_id INT NOT NULL,
-        fecha DATE NOT NULL,
-        hora TIME NOT NULL,
-        tipo_cita VARCHAR(100) NOT NULL,
-        motivo TEXT,
-        notas TEXT,
-        estado ENUM('pendiente', 'confirmada', 'completada', 'cancelada') DEFAULT 'pendiente',
-        fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP,
-        fecha_actualizacion DATETIME ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (paciente_id) REFERENCES pacientes(id),
-        FOREIGN KEY (medico_id) REFERENCES usuarios(id)
-      )
-    `;
-    
-    await new Promise((resolve, reject) => {
-      db.query(createCitasTable, (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-    
-    // Insertar la cita
     const insertQuery = `
       INSERT INTO citas (paciente_id, medico_id, fecha, hora, tipo_cita, motivo, notas, estado)
       VALUES (?, ?, ?, ?, ?, ?, ?, 'pendiente')
@@ -5391,7 +5628,7 @@ app.post('/api/citas/solicitar', requireLogin, requireRole('paciente'), async (r
       });
     });
     
-    console.log(`✅ Cita solicitada: ID ${result.insertId}, Paciente ${paciente_id}, Médico ${medico_id}`);
+    console.log('✅ Cita solicitada: ID ' + result.insertId + ', Paciente ' + paciente_id + ', Médico ' + medico_id);
     
     res.json({ 
       success: true, 
@@ -5408,344 +5645,36 @@ app.post('/api/citas/solicitar', requireLogin, requireRole('paciente'), async (r
   }
 });
 
-// API: Cambiar estado de cita (médicos y pacientes)
-app.post('/api/citas/cambiar-estado/:id', requireLogin, async (req, res) => {
-  const user = req.session.user;
-  const citaId = req.params.id;
-  const { estado } = req.body;
-  
-  if (!estado || !['confirmada', 'completada', 'cancelada'].includes(estado)) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Estado inválido' 
-    });
-  }
-  
-  try {
-    // Verificar que la cita exista y el usuario tenga permisos
-    const checkQuery = `
-      SELECT c.*, p.usuario_id as paciente_usuario_id 
-      FROM citas c
-      LEFT JOIN pacientes p ON c.paciente_id = p.id
-      WHERE c.id = ?
-    `;
-    
-    const citaResults = await new Promise((resolve, reject) => {
-      db.query(checkQuery, [citaId], (err, results) => {
-        if (err) reject(err);
-        else resolve(results);
-      });
-    });
-    
-    if (citaResults.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Cita no encontrada' 
-      });
-    }
-    
-    const cita = citaResults[0];
-    
-    // Verificar permisos
-    const puedeModificar = user.tipo_usuario === 'medico' 
-      ? cita.medico_id === user.id
-      : cita.paciente_usuario_id === user.id;
-    
-    if (!puedeModificar) {
-      return res.status(403).json({ 
-        success: false, 
-        error: 'No tienes permiso para modificar esta cita' 
-      });
-    }
-    
-    // Restricciones adicionales para pacientes
-    if (user.tipo_usuario === 'paciente' && estado !== 'cancelada') {
-      return res.status(403).json({ 
-        success: false, 
-        error: 'Los pacientes solo pueden cancelar citas' 
-      });
-    }
-    
-    // Verificar que no se cancele una cita completada
-    if (cita.estado === 'completada' && estado === 'cancelada') {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'No se puede cancelar una cita ya completada' 
-      });
-    }
-    
-    // Actualizar estado
-    const updateQuery = `
-      UPDATE citas 
-      SET estado = ?, 
-          fecha_actualizacion = CURRENT_TIMESTAMP 
-      WHERE id = ?
-    `;
-    
-    await new Promise((resolve, reject) => {
-      db.query(updateQuery, [estado, citaId], (err, updateResult) => {
-        if (err) reject(err);
-        else resolve(updateResult);
-      });
-    });
-    
-    console.log(`✅ Estado de cita ${citaId} actualizado a ${estado} por ${user.nombre_usuario}`);
-    
-    res.json({ 
-      success: true, 
-      message: `Cita ${estado} correctamente`
-    });
-    
-  } catch (error) {
-    console.error('Error actualizando estado de cita:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Error al actualizar el estado' 
-    });
-  }
+// ========== RUTAS FALTANTES SIMPLIFICADAS ==========
+app.get('/ver-citas-pendientes', requireLogin, requireRole('medico'), (req, res) => {
+  res.redirect('/ver-citas');
 });
 
-// API: Editar notas de cita (médicos)
-app.post('/api/citas/editar-notas/:id', requireLogin, requireRole('medico'), async (req, res) => {
-  const user = req.session.user;
-  const citaId = req.params.id;
-  const { notas } = req.body;
-  
-  try {
-    // Verificar que la cita exista y pertenezca al médico
-    const checkQuery = 'SELECT id FROM citas WHERE id = ? AND medico_id = ?';
-    
-    const citaResults = await new Promise((resolve, reject) => {
-      db.query(checkQuery, [citaId, user.id], (err, results) => {
-        if (err) reject(err);
-        else resolve(results);
-      });
-    });
-    
-    if (citaResults.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Cita no encontrada o no tienes permiso' 
-      });
-    }
-    
-    // Actualizar notas
-    const updateQuery = 'UPDATE citas SET notas = ? WHERE id = ?';
-    
-    await new Promise((resolve, reject) => {
-      db.query(updateQuery, [notas || null, citaId], (err, updateResult) => {
-        if (err) reject(err);
-        else resolve(updateResult);
-      });
-    });
-    
-    console.log(`✅ Notas de cita ${citaId} actualizadas por ${user.nombre_usuario}`);
-    
-    res.json({ 
-      success: true, 
-      message: 'Notas actualizadas correctamente'
-    });
-    
-  } catch (error) {
-    console.error('Error actualizando notas de cita:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Error al actualizar las notas' 
-    });
-  }
-});
-
-// API: Cancelar cita (alias para pacientes)
-app.post('/api/citas/cancelar/:id', requireLogin, requireRole('paciente'), (req, res) => {
-  req.body = { estado: 'cancelada' };
-  app._router.handle(req, res, () => {});
-});
-
-// ========== APIs PARA HORARIOS MÉDICOS ==========
-
-// API: Agregar horario (médicos)
-app.post('/api/horarios/agregar', requireLogin, requireRole('medico'), async (req, res) => {
-  const user = req.session.user;
-  const { dia_semana, hora_inicio, hora_fin, duracion_cita } = req.body;
-  
-  // Validaciones
-  if (!dia_semana || !hora_inicio || !hora_fin) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Día, hora de inicio y hora de fin son requeridos' 
-    });
-  }
-  
-  // Validar que hora_fin sea posterior a hora_inicio
-  if (hora_fin <= hora_inicio) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'La hora de fin debe ser posterior a la hora de inicio' 
-    });
-  }
-  
-  try {
-    // Verificar si ya existe un horario que se solape
-    const checkQuery = `
-      SELECT id FROM horarios_medicos 
-      WHERE medico_id = ? 
-        AND dia_semana = ? 
-        AND (
-          (hora_inicio <= ? AND hora_fin > ?) OR
-          (hora_inicio < ? AND hora_fin >= ?) OR
-          (hora_inicio >= ? AND hora_fin <= ?)
-        )
-    `;
-    
-    const existingHorarios = await new Promise((resolve, reject) => {
-      db.query(checkQuery, [user.id, dia_semana, hora_inicio, hora_inicio, hora_fin, hora_fin, hora_inicio, hora_fin], 
-        (err, results) => {
-          if (err) reject(err);
-          else resolve(results);
-        });
-    });
-    
-    if (existingHorarios.length > 0) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Ya existe un horario que se solapa con este intervalo' 
-      });
-    }
-    
-    // Insertar horario
-    const insertQuery = `
-      INSERT INTO horarios_medicos (medico_id, dia_semana, hora_inicio, hora_fin, duracion_cita, activo)
-      VALUES (?, ?, ?, ?, ?, TRUE)
-    `;
-    
-    const result = await new Promise((resolve, reject) => {
-      db.query(insertQuery, [user.id, dia_semana, hora_inicio, hora_fin, duracion_cita || 30], (err, results) => {
-        if (err) reject(err);
-        else resolve(results);
-      });
-    });
-    
-    console.log(`✅ Horario agregado: Médico ${user.id}, Día ${dia_semana}, ${hora_inicio}-${hora_fin}`);
-    
-    res.json({ 
-      success: true, 
-      message: 'Horario agregado correctamente',
-      horarioId: result.insertId
-    });
-    
-  } catch (error) {
-    console.error('Error insertando horario:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Error al guardar el horario' 
-    });
-  }
-});
-
-// API: Cambiar estado de horario (médicos)
-app.post('/api/horarios/cambiar-estado/:id', requireLogin, requireRole('medico'), async (req, res) => {
-  const user = req.session.user;
-  const horarioId = req.params.id;
-  const { activo } = req.body;
-  
-  if (typeof activo !== 'boolean') {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Estado inválido' 
-    });
-  }
-  
-  try {
-    // Verificar que el horario exista y pertenezca al médico
-    const checkQuery = 'SELECT id FROM horarios_medicos WHERE id = ? AND medico_id = ?';
-    
-    const horarioResults = await new Promise((resolve, reject) => {
-      db.query(checkQuery, [horarioId, user.id], (err, results) => {
-        if (err) reject(err);
-        else resolve(results);
-      });
-    });
-    
-    if (horarioResults.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Horario no encontrado o no tienes permiso' 
-      });
-    }
-    
-    // Actualizar estado
-    const updateQuery = 'UPDATE horarios_medicos SET activo = ? WHERE id = ?';
-    
-    await new Promise((resolve, reject) => {
-      db.query(updateQuery, [activo, horarioId], (err, updateResult) => {
-        if (err) reject(err);
-        else resolve(updateResult);
-      });
-    });
-    
-    console.log(`✅ Estado de horario ${horarioId} actualizado a ${activo} por ${user.nombre_usuario}`);
-    
-    res.json({ 
-      success: true, 
-      message: `Horario ${activo ? 'activado' : 'desactivado'} correctamente`
-    });
-    
-  } catch (error) {
-    console.error('Error actualizando estado de horario:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Error al actualizar el estado' 
-    });
-  }
-});
-
-// API: Eliminar horario (médicos)
-app.delete('/api/horarios/eliminar/:id', requireLogin, requireRole('medico'), async (req, res) => {
-  const user = req.session.user;
-  const horarioId = req.params.id;
-  
-  try {
-    // Verificar que el horario exista y pertenezca al médico
-    const checkQuery = 'SELECT id FROM horarios_medicos WHERE id = ? AND medico_id = ?';
-    
-    const horarioResults = await new Promise((resolve, reject) => {
-      db.query(checkQuery, [horarioId, user.id], (err, results) => {
-        if (err) reject(err);
-        else resolve(results);
-      });
-    });
-    
-    if (horarioResults.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Horario no encontrado o no tienes permiso' 
-      });
-    }
-    
-    // Eliminar horario
-    const deleteQuery = 'DELETE FROM horarios_medicos WHERE id = ?';
-    
-    await new Promise((resolve, reject) => {
-      db.query(deleteQuery, [horarioId], (err, deleteResult) => {
-        if (err) reject(err);
-        else resolve(deleteResult);
-      });
-    });
-    
-    console.log(`✅ Horario ${horarioId} eliminado por ${user.nombre_usuario}`);
-    
-    res.json({ 
-      success: true, 
-      message: 'Horario eliminado correctamente'
-    });
-    
-  } catch (error) {
-    console.error('Error eliminando horario:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Error al eliminar el horario' 
-    });
-  }
+app.get('/horarios-medico', requireLogin, requireRole('medico'), (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <link rel="stylesheet" href="/styles.css">
+      <title>Horarios Médico</title>
+    </head>
+    <body>
+      <div id="navbar-container"></div>
+      <div class="container">
+        <h1>⏰ Horarios del Médico</h1>
+        <p>Esta funcionalidad está en desarrollo.</p>
+        <a href="/dashboard">← Volver al inicio</a>
+      </div>
+      <script>
+        fetch('/navbar')
+          .then(response => response.text())
+          .then(html => {
+            document.getElementById('navbar-container').innerHTML = html;
+          });
+      </script>
+    </body>
+    </html>
+  `);
 });
 
 // ========== MANEJO DE ERRORES ==========
@@ -5786,68 +5715,26 @@ const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, '0.0.0.0', () => {
   const localIP = getLocalIP();
   console.log(`
-🚀 ======================================================
-   Servidor Hospitalario v2.0 - SISTEMA DE CITAS Y MENSAJERÍA
+======================================================
+   Servidor Hospitalario v2.0 - SISTEMA DE HISTORIALES CLÍNICOS
 ========================================================
 
-✅ Conexión MySQL establecida
-✅ Tabla de mensajes creada/verificada
-✅ Sistema de mensajería para médicos y enfermeros
-✅ Sistema de programación de citas completo
-🌐 Accesos disponibles:
-   📍 Local:          http://localhost:${PORT}
-   📍 Red local:      http://${localIP}:${PORT}
+Conexión MySQL establecida
+Tabla de mensajes creada/verificada
+Tabla de citas creada/verificada
+Tabla de historiales clínicos creada/verificada
+Sistema de historiales clínicos completo
+Sistema de mensajería para médicos y enfermeros
+Sistema de programación de citas completo
+Accesos disponibles:
+Local:          http://localhost:${PORT}
+Red local:      http://${localIP}:${PORT}
 
-🔧 HERRAMIENTAS DE DEBUG:
-   📊 Estado DB:      http://localhost:${PORT}/debug/db-status
-
-💬 SISTEMA DE MENSAJERÍA ARREGLADO:
-   - ✅ Tabla de mensajes creada automáticamente
-   - ✅ Médicos ↔ Enfermeros ✓
-   - ✅ Médicos ↔ Médicos ✓
-   - ✅ Enfermeros ↔ Enfermeros ✓
-   - ❌ PACIENTES: SIN ACCESO A MENSAJERÍA
-   - ✅ Widget en dashboard para personal médico ✓
-
-📅 SISTEMA DE CITAS COMPLETO:
-   👨‍⚕️ MÉDICOS:
-      - ✅ Ver todas las citas ✓
-      - ✅ Confirmar/Completar/Cancelar citas ✓
-      - ✅ Gestionar horarios de atención ✓
-      - ✅ Editar notas de citas ✓
-      - ✅ Ver citas pendientes ✓
-   
-   🏥 PACIENTES:
-      - ✅ Solicitar nuevas citas ✓
-      - ✅ Ver sus citas programadas ✓
-      - ✅ Cancelar sus citas ✓
-      - ✅ Ver estado de citas ✓
-
-👥 PERMISOS ACTUALIZADOS:
-   👨‍⚕️ MÉDICOS: Codigo acceso (MED123)
-      - ✅ Acceso completo ✓
-      - ✅ Mensajería con médicos y enfermeros ✓
-      - ✅ Dashboard con widget de mensajes ✓
-      - ✅ Gestión completa de citas ✓
-      
-   👩‍⚕️ ENFERMEROS: Codigo acceso (ENF456)
-      - ✅ Pacientes (Ver, Agregar, Eliminar) ✓
-      - ✅ Medicamentos (Solo Ver) ✓
-      - ✅ Dispositivos (Solo Ver) ✓  
-      - ✅ Archivos (Subir y Descargar) ✓
-      - ✅ Excel (Descargar reportes) ✓
-      - ✅ Mensajería con médicos y enfermeros ✓
-      - ✅ Dashboard con widget de mensajes ✓
-      
-   🏥 PACIENTES: Codigo acceso (PAC789)
-      - ✅ Ver otros pacientes ✓
-      - ✅ Solicitar citas médicas ✓
-      - ✅ Ver y gestionar sus citas ✓
-      - ✅ Dashboard personalizado ✓
-      - ❌ SIN ACCESO a medicamentos y dispositivos
+HERRAMIENTAS DE DEBUG:
+Estado DB:      http://localhost:${PORT}/debug/db-status
 
 ========================================================
-🚀 Servidor iniciado en puerto ${PORT}
+Servidor iniciado en puerto ${PORT}
 ========================================================
   `);
 });
