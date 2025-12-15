@@ -29,7 +29,7 @@ db.connect((err) => {
   createMensajesTable();
   createCitasTable();
   createHistorialesTable();
-  createHorariosMedicoTable(); // Nueva tabla para horarios
+  createHorariosMedicoTable();
 });
 
 // Crear tabla de mensajes si no existe
@@ -72,8 +72,8 @@ function createCitasTable() {
       estado ENUM('pendiente', 'confirmada', 'completada', 'cancelada') DEFAULT 'pendiente',
       fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP,
       fecha_actualizacion DATETIME ON UPDATE CURRENT_TIMESTAMP,
-      FOREIGN KEY (paciente_id) REFERENCES pacientes(id),
-      FOREIGN KEY (medico_id) REFERENCES usuarios(id)
+      FOREIGN KEY (paciente_id) REFERENCES pacientes(id) ON DELETE CASCADE,
+      FOREIGN KEY (medico_id) REFERENCES usuarios(id) ON DELETE CASCADE
     )
   `;
   
@@ -871,17 +871,17 @@ app.get('/dashboard', requireLogin, async (req, res) => {
         <div id="navbar-container"></div>
         
         <div class="dashboard-container">
-                    <div class="welcome-section">
+          <div class="welcome-section">
             <h1 style="color: white;">🏥 Bienvenido, ${user.nombre_usuario} <span class="user-badge">${user.tipo_usuario.toUpperCase()}</span></h1>
             <p style="color: white;">Sistema de Gestión Hospitalaria - Panel de Control</p>
           </div>
+          
           <div class="stats-grid">
             <div class="stat-card pacientes">
               <div class="stat-title">Pacientes Registrados</div>
               <div class="stat-number">${stats.total_pacientes || 0}</div>
               <div>Total en el sistema</div>
             </div>
-            
     `;
     
     if (user.tipo_usuario !== 'paciente') {
@@ -2324,17 +2324,47 @@ app.get('/ver-historial-paciente/:pacienteId', requireLogin, requireRole('medico
   });
 });
 
-// Ver historial clínico propio (para pacientes)
+// Ver historial clínico propio (para pacientes) - CORREGIDA
 app.get('/ver-mi-historial', requireLogin, requireRole('paciente'), (req, res) => {
   const user = req.session.user;
   
-  db.query('SELECT id FROM pacientes WHERE usuario_id = ?', [user.id], (err, pacienteResults) => {
-    if (err || pacienteResults.length === 0) {
+  // Primero obtener el ID del paciente desde la tabla pacientes usando el usuario_id
+  db.query('SELECT id, nombre, causa, fecha_registro FROM pacientes WHERE usuario_id = ?', [user.id], (err, pacienteResults) => {
+    if (err) {
       console.error('Error obteniendo paciente:', err);
-      return res.status(404).send('Paciente no encontrado');
+      return res.status(500).send('Error al obtener información del paciente.');
     }
     
-    const pacienteId = pacienteResults[0].id;
+    if (pacienteResults.length === 0) {
+      return res.status(404).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <link rel="stylesheet" href="/styles.css">
+          <title>Paciente no encontrado</title>
+        </head>
+        <body>
+          <div id="navbar-container"></div>
+          <div class="container">
+            <h1>⚠️ Paciente no encontrado</h1>
+            <p>No se encontró un perfil de paciente asociado a tu cuenta.</p>
+            <p>Por favor, contacta al administrador del sistema.</p>
+            <a href="/dashboard" class="menu-btn">← Volver al inicio</a>
+          </div>
+          <script>
+            fetch('/navbar')
+              .then(response => response.text())
+              .then(html => {
+                document.getElementById('navbar-container').innerHTML = html;
+              });
+          </script>
+        </body>
+        </html>
+      `);
+    }
+    
+    const paciente = pacienteResults[0];
+    const pacienteId = paciente.id;
     
     const query = `
       SELECT 
@@ -2348,157 +2378,150 @@ app.get('/ver-mi-historial', requireLogin, requireRole('paciente'), (req, res) =
       ORDER BY hc.fecha_consulta DESC
     `;
     
-    db.query('SELECT * FROM pacientes WHERE id = ?', [pacienteId], (err, pacienteData) => {
-      if (err || pacienteData.length === 0) {
-        return res.status(404).send('Paciente no encontrado');
+    db.query(query, [pacienteId], (err, results) => {
+      if (err) {
+        console.error('Error obteniendo historial:', err);
+        return res.status(500).send('Error al obtener historial clínico.');
       }
       
-      const paciente = pacienteData[0];
+      let html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <link rel="stylesheet" href="/styles.css">
+          <title>Mi Historial Clínico</title>
+          <style>
+            .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+            .paciente-info {
+              background: #f8f9fa;
+              padding: 20px;
+              border-radius: 10px;
+              margin-bottom: 30px;
+              border-left: 5px solid #9C27B0;
+            }
+            .historial-card {
+              background: white;
+              border-radius: 10px;
+              padding: 25px;
+              margin-bottom: 20px;
+              box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+              border-left: 5px solid #4CAF50;
+            }
+            .historial-header {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 15px;
+              padding-bottom: 15px;
+              border-bottom: 2px solid #f0f0f0;
+            }
+            .historial-section {
+              margin-bottom: 15px;
+            }
+            .section-title {
+              font-weight: bold;
+              color: #333;
+              margin-bottom: 5px;
+              display: flex;
+              align-items: center;
+            }
+            .section-content {
+              padding: 10px;
+              background: #f8f9fa;
+              border-radius: 5px;
+              white-space: pre-line;
+            }
+            .empty-state {
+              text-align: center;
+              padding: 50px;
+              color: #666;
+              font-size: 18px;
+            }
+          </style>
+        </head>
+        <body>
+          <div id="navbar-container"></div>
+          <div class="container">
+            <div class="paciente-info">
+              <h1>📋 Mi Historial Clínico</h1>
+              <div>
+                <h2 style="margin-top: 5px;">${paciente.nombre}</h2>
+                <p><strong>Causa/Diagnóstico:</strong> ${paciente.causa}</p>
+                <p><strong>Fecha de Registro:</strong> ${new Date(paciente.fecha_registro).toLocaleDateString('es-ES')}</p>
+              </div>
+            </div>
+      `;
       
-      db.query(query, [pacienteId], (err, results) => {
-        if (err) {
-          console.error('Error obteniendo historial:', err);
-          return res.status(500).send('Error al obtener historial clínico.');
-        }
-        
-        let html = `
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <link rel="stylesheet" href="/styles.css">
-            <title>Mi Historial Clínico</title>
-            <style>
-              .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-              .paciente-info {
-                background: #f8f9fa;
-                padding: 20px;
-                border-radius: 10px;
-                margin-bottom: 30px;
-                border-left: 5px solid #9C27B0;
-              }
-              .historial-card {
-                background: white;
-                border-radius: 10px;
-                padding: 25px;
-                margin-bottom: 20px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                border-left: 5px solid #4CAF50;
-              }
-              .historial-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 15px;
-                padding-bottom: 15px;
-                border-bottom: 2px solid #f0f0f0;
-              }
-              .historial-section {
-                margin-bottom: 15px;
-              }
-              .section-title {
-                font-weight: bold;
-                color: #333;
-                margin-bottom: 5px;
-                display: flex;
-                align-items: center;
-              }
-              .section-content {
-                padding: 10px;
-                background: #f8f9fa;
-                border-radius: 5px;
-                white-space: pre-line;
-              }
-              .empty-state {
-                text-align: center;
-                padding: 50px;
-                color: #666;
-                font-size: 18px;
-              }
-            </style>
-          </head>
-          <body>
-            <div id="navbar-container"></div>
-            <div class="container">
-              <div class="paciente-info">
-                <h1>📋 Mi Historial Clínico</h1>
-                <div>
-                  <h2 style="margin-top: 5px;">${paciente.nombre}</h2>
-                  <p><strong>Causa/Diagnóstico:</strong> ${paciente.causa}</p>
-                  <p><strong>Fecha de Registro:</strong> ${new Date(paciente.fecha_registro).toLocaleDateString('es-ES')}</p>
-                </div>
-              </div>
-        `;
-        
-        if (results.length > 0) {
-          results.forEach(historial => {
-            const fecha = new Date(historial.fecha_consulta).toLocaleDateString('es-ES', { 
-              weekday: 'long', 
-              year: 'numeric', 
-              month: 'long', 
-              day: 'numeric' 
-            });
-            
-            html += `
-              <div class="historial-card">
-                <div class="historial-header">
-                  <div>
-                    <h3 style="margin: 0;">Consulta del ${fecha}</h3>
-                    <p style="margin: 5px 0 0 0; color: #666;">Atendido por: ${historial.medico_nombre || 'Médico'}</p>
-                  </div>
-                </div>
-                
-                <div class="historial-section">
-                  <div class="section-title">📝 Motivo de la Consulta:</div>
-                  <div class="section-content">${historial.motivo_consulta}</div>
-                </div>
-                
-                ${historial.diagnostico ? `
-                <div class="historial-section">
-                  <div class="section-title">🩺 Diagnóstico:</div>
-                  <div class="section-content">${historial.diagnostico}</div>
-                </div>
-                ` : ''}
-                
-                ${historial.tratamiento ? `
-                <div class="historial-section">
-                  <div class="section-title">💊 Tratamiento:</div>
-                  <div class="section-content">${historial.tratamiento}</div>
-                </div>
-                ` : ''}
-                
-                ${historial.medicamentos_prescritos ? `
-                <div class="historial-section">
-                  <div class="section-title">💊 Medicamentos Prescritos:</div>
-                  <div class="section-content">${historial.medicamentos_prescritos}</div>
-                </div>
-                ` : ''}
-                
-                ${historial.observaciones ? `
-                <div class="historial-section">
-                  <div class="section-title">📄 Observaciones:</div>
-                  <div class="section-content">${historial.observaciones}</div>
-                </div>
-                ` : ''}
-                
-                <div style="font-size: 12px; color: #666; margin-top: 15px; text-align: right;">
-                  Registrado: ${new Date(historial.fecha_creacion).toLocaleDateString('es-ES')}
-                </div>
-              </div>
-            `;
+      if (results.length > 0) {
+        results.forEach(historial => {
+          const fecha = new Date(historial.fecha_consulta).toLocaleDateString('es-ES', { 
+            weekday: 'long', 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric' 
           });
-        } else {
+          
           html += `
-            <div class="empty-state">
-              <p>📭 No hay registros en tu historial clínico</p>
-              <p>¡Solicita una cita médica para comenzar tu historial!</p>
-              <a href="/solicitar-cita" class="menu-btn" style="margin-top: 20px; display: inline-block;">
-                📅 Solicitar Cita Médica
-              </a>
+            <div class="historial-card">
+              <div class="historial-header">
+                <div>
+                  <h3 style="margin: 0;">Consulta del ${fecha}</h3>
+                  <p style="margin: 5px 0 0 0; color: #666;">Atendido por: ${historial.medico_nombre || 'Médico'}</p>
+                </div>
+              </div>
+              
+              <div class="historial-section">
+                <div class="section-title">📝 Motivo de la Consulta:</div>
+                <div class="section-content">${historial.motivo_consulta}</div>
+              </div>
+              
+              ${historial.diagnostico ? `
+              <div class="historial-section">
+                <div class="section-title">🩺 Diagnóstico:</div>
+                <div class="section-content">${historial.diagnostico}</div>
+              </div>
+              ` : ''}
+              
+              ${historial.tratamiento ? `
+              <div class="historial-section">
+                <div class="section-title">💊 Tratamiento:</div>
+                <div class="section-content">${historial.tratamiento}</div>
+              </div>
+              ` : ''}
+              
+              ${historial.medicamentos_prescritos ? `
+              <div class="historial-section">
+                <div class="section-title">💊 Medicamentos Prescritos:</div>
+                <div class="section-content">${historial.medicamentos_prescritos}</div>
+              </div>
+              ` : ''}
+              
+              ${historial.observaciones ? `
+              <div class="historial-section">
+                <div class="section-title">📄 Observaciones:</div>
+                <div class="section-content">${historial.observaciones}</div>
+              </div>
+              ` : ''}
+              
+              <div style="font-size: 12px; color: #666; margin-top: 15px; text-align: right;">
+                Registrado: ${new Date(historial.fecha_creacion).toLocaleDateString('es-ES')}
+              </div>
             </div>
           `;
-        }
-        
+        });
+      } else {
         html += `
+          <div class="empty-state">
+            <p>📭 No hay registros en tu historial clínico</p>
+            <p>¡Solicita una cita médica para comenzar tu historial!</p>
+            <a href="/solicitar-cita" class="menu-btn" style="margin-top: 20px; display: inline-block;">
+              📅 Solicitar Cita Médica
+            </a>
+          </div>
+        `;
+      }
+      
+      html += `
               <div style="text-align: center; margin-top: 40px;">
                 <a href="/dashboard" class="menu-btn" style="display: inline-block; width: auto; padding: 12px 30px;">
                   ← Volver al inicio
@@ -2518,8 +2541,7 @@ app.get('/ver-mi-historial', requireLogin, requireRole('paciente'), (req, res) =
           </html>
         `;
         
-        res.send(html);
-      });
+      res.send(html);
     });
   });
 });
@@ -2618,7 +2640,7 @@ app.get('/ver-historiales', requireLogin, requireRole('medico', 'enfermero'), (r
       <body>
         <div id="navbar-container"></div>
         <div class="container">
-                   <h1 style="color: black;">📋 Historiales Clínicos</h1>
+          <h1>📋 Historiales Clínicos</h1>
           
           <div class="actions">
             <a href="/agregar-historial" class="action-btn historial">➕ Agregar Historial</a>
@@ -3489,7 +3511,7 @@ app.get('/ver-medicamentos', requireLogin, requireRole('medico', 'enfermero'), (
       <body>
         <div id="navbar-container"></div>
         <div class="container">
-           <h1 style="color: black;"> Medicamentos Registrados</h1>
+          <h1>💊 Medicamentos Registrados</h1>
           <div class="search-container">
             <input type="text" id="buscar" placeholder="🔍 Buscar medicamento por nombre o función...">
           </div>
@@ -3563,7 +3585,7 @@ app.get('/agregar-medicamento', requireLogin, requireRole('medico'), (req, res) 
         <form action="/agregar-medicamento" method="POST">
           <div class="form-group">
             <label>Nombre:</label>
-            <input type="text" name"nombre" required>
+            <input type="text" name="nombre" required>
           </div>
           <div class="form-group">
             <label>Función:</label>
@@ -3729,7 +3751,7 @@ app.get('/ver-dispositivos', requireLogin, requireRole('medico', 'enfermero'), (
       <body>
         <div id="navbar-container"></div>
         <div class="container">
-          <h1 style="color: black;"> Dispositivos Médicos Registrados</h1>
+          <h1>🩺 Dispositivos Médicos Registrados</h1>
           <div class="search-container">
             <input type="text" id="buscar" placeholder="🔍 Buscar dispositivo por nombre, tipo o estado...">
           </div>
@@ -5070,17 +5092,47 @@ app.post('/api/mensajes/enviar', requireLogin, requireMedicoOrEnfermero, (req, r
 });
 
 // ========== SISTEMA DE PROGRAMACIÓN DE CITAS ==========
-// Rutas básicas de citas (simplificadas para que el código funcione)
+// Ver mis citas (para pacientes) - CORREGIDA
 app.get('/ver-mis-citas', requireLogin, requireRole('paciente'), (req, res) => {
   const user = req.session.user;
   
-  db.query('SELECT id FROM pacientes WHERE usuario_id = ?', [user.id], (err, pacienteResults) => {
-    if (err || pacienteResults.length === 0) {
+  // Primero obtener el ID del paciente desde la tabla pacientes usando el usuario_id
+  db.query('SELECT id, nombre FROM pacientes WHERE usuario_id = ?', [user.id], (err, pacienteResults) => {
+    if (err) {
       console.error('Error obteniendo ID de paciente:', err);
       return res.status(500).send('Error al obtener información del paciente.');
     }
     
-    const pacienteId = pacienteResults[0].id;
+    if (pacienteResults.length === 0) {
+      return res.status(404).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <link rel="stylesheet" href="/styles.css">
+          <title>Paciente no encontrado</title>
+        </head>
+        <body>
+          <div id="navbar-container"></div>
+          <div class="container">
+            <h1>⚠️ Paciente no encontrado</h1>
+            <p>No se encontró un perfil de paciente asociado a tu cuenta.</p>
+            <p>Por favor, contacta al administrador del sistema.</p>
+            <a href="/dashboard" class="menu-btn">← Volver al inicio</a>
+          </div>
+          <script>
+            fetch('/navbar')
+              .then(response => response.text())
+              .then(html => {
+                document.getElementById('navbar-container').innerHTML = html;
+              });
+          </script>
+        </body>
+        </html>
+      `);
+    }
+    
+    const paciente = pacienteResults[0];
+    const pacienteId = paciente.id;
     
     const query = `
       SELECT 
@@ -5240,162 +5292,223 @@ app.get('/ver-mis-citas', requireLogin, requireRole('paciente'), (req, res) => {
   });
 });
 
+// Solicitar cita (para pacientes)
 app.get('/solicitar-cita', requireLogin, requireRole('paciente'), (req, res) => {
-  db.query('SELECT id, nombre_usuario FROM usuarios WHERE tipo_usuario = "medico"', (err, medicos) => {
-    if (err) {
-      console.error('Error obteniendo médicos:', err);
-      return res.status(500).send('Error al cargar el formulario.');
+  // Primero obtener el ID del paciente
+  const user = req.session.user;
+  
+  db.query('SELECT id FROM pacientes WHERE usuario_id = ?', [user.id], (err, pacienteResults) => {
+    if (err || pacienteResults.length === 0) {
+      console.error('Error obteniendo ID de paciente:', err);
+      return res.status(500).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <link rel="stylesheet" href="/styles.css">
+          <title>Error</title>
+        </head>
+        <body>
+          <div id="navbar-container"></div>
+          <div class="container">
+            <h1>⚠️ Error</h1>
+            <p>No se pudo obtener tu información de paciente.</p>
+            <p>Por favor, contacta al administrador.</p>
+            <a href="/dashboard" class="menu-btn">← Volver al inicio</a>
+          </div>
+          <script>
+            fetch('/navbar')
+              .then(response => response.text())
+              .then(html => {
+                document.getElementById('navbar-container').innerHTML = html;
+              });
+          </script>
+        </body>
+        </html>
+      `);
     }
     
-    let medicoOptions = '';
-    medicos.forEach(medico => {
-      medicoOptions += `<option value="${medico.id}">👨‍⚕️ ${medico.nombre_usuario}</option>`;
-    });
+    const pacienteId = pacienteResults[0].id;
     
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <link rel="stylesheet" href="/styles.css">
-        <title>Solicitar Cita</title>
-        <style>
-          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-          .form-group { margin-bottom: 20px; }
-          label { display: block; margin-bottom: 8px; font-weight: bold; }
-          input, select, textarea {
-            width: 100%;
-            padding: 12px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            font-size: 16px;
-            box-sizing: border-box;
-          }
-          button {
-            background: #4CAF50;
-            color: white;
-            padding: 12px 25px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 16px;
-            width: 100%;
-          }
-          button:hover { background: #45a049; }
-          .info-text {
-            color: #666;
-            font-size: 14px;
-            margin-top: 5px;
-          }
-        </style>
-      </head>
-      <body>
-        <div id="navbar-container"></div>
-        <div class="container">
-          <h1>📅 Solicitar Nueva Cita</h1>
-          
-          <div id="message" style="margin-bottom: 20px;"></div>
-          
-          <form id="citaForm">
-            <div class="form-group">
-              <label for="medico_id">Selecciona Médico:</label>
-              <select id="medico_id" name="medico_id" required>
-                <option value="">Selecciona un médico</option>
-                ${medicoOptions}
-              </select>
-            </div>
-            
-            <div class="form-group">
-              <label for="fecha">Fecha de la Cita:</label>
-              <input type="date" id="fecha" name="fecha" required min="${new Date().toISOString().split('T')[0]}">
-              <div class="info-text">Selecciona una fecha futura</div>
-            </div>
-            
-            <div class="form-group">
-              <label for="hora">Hora de la Cita:</label>
-              <input type="time" id="hora" name="hora" required min="08:00" max="18:00">
-              <div class="info-text">Horario de atención: 8:00 AM - 6:00 PM</div>
-            </div>
-            
-            <div class="form-group">
-              <label for="tipo_cita">Tipo de Cita:</label>
-              <select id="tipo_cita" name="tipo_cita" required>
-                <option value="">Selecciona tipo</option>
-                <option value="Consulta General">Consulta General</option>
-                <option value="Control">Control</option>
-                <option value="Emergencia">Emergencia</option>
-                <option value="Examen">Examen</option>
-                <option value="Otro">Otro</option>
-              </select>
-            </div>
-            
-            <div class="form-group">
-              <label for="motivo">Motivo de la Cita:</label>
-              <textarea id="motivo" name="motivo" rows="4" required placeholder="Describe brevemente el motivo de tu cita..."></textarea>
-            </div>
-            
-            <div class="form-group">
-              <label for="notas">Notas Adicionales (opcional):</label>
-              <textarea id="notas" name="notas" rows="3" placeholder="Cualquier información adicional que quieras agregar..."></textarea>
-            </div>
-            
-            <button type="submit">📅 Solicitar Cita</button>
-          </form>
-          
-          <div style="text-align: center; margin-top: 20px;">
-            <a href="/ver-mis-citas">← Volver a Mis Citas</a>
-          </div>
-        </div>
-        
-        <script>
-          fetch('/navbar')
-            .then(response => response.text())
-            .then(html => {
-              document.getElementById('navbar-container').innerHTML = html;
-            })
-            .catch(error => console.error('Error cargando navbar:', error));
-          
-          document.getElementById('citaForm').addEventListener('submit', async function(e) {
-            e.preventDefault();
-            
-            const formData = new FormData(this);
-            const data = Object.fromEntries(formData.entries());
-            
-            try {
-              const response = await fetch('/api/citas/solicitar', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(data)
-              });
-              
-              const result = await response.json();
-              
-              const messageDiv = document.getElementById('message');
-              if (result.success) {
-                messageDiv.innerHTML = '<div style="background: #e6ffe6; color: #008000; padding: 15px; border-radius: 5px; margin-bottom: 20px;">✅ ' + result.message + '</div>';
-                document.getElementById('citaForm').reset();
-                
-                setTimeout(() => {
-                  window.location.href = '/ver-mis-citas';
-                }, 3000);
-              } else {
-                messageDiv.innerHTML = '<div style="background: #ffe6e6; color: #ff0000; padding: 15px; border-radius: 5px; margin-bottom: 20px;">❌ ' + result.error + '</div>';
-              }
-            } catch (error) {
-              const messageDiv = document.getElementById('message');
-              messageDiv.innerHTML = '<div style="background: #ffe6e6; color: #ff0000; padding: 15px; border-radius: 5px; margin-bottom: 20px;">❌ Error de conexión: ' + error.message + '</div>';
+    // Obtener médicos disponibles
+    db.query('SELECT id, nombre_usuario FROM usuarios WHERE tipo_usuario = "medico"', (err, medicos) => {
+      if (err) {
+        console.error('Error obteniendo médicos:', err);
+        return res.status(500).send('Error al cargar el formulario.');
+      }
+      
+      let medicoOptions = '';
+      medicos.forEach(medico => {
+        medicoOptions += `<option value="${medico.id}">👨‍⚕️ ${medico.nombre_usuario}</option>`;
+      });
+      
+      const html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <link rel="stylesheet" href="/styles.css">
+          <title>Solicitar Cita</title>
+          <style>
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .form-group { margin-bottom: 20px; }
+            label { display: block; margin-bottom: 8px; font-weight: bold; }
+            input, select, textarea {
+              width: 100%;
+              padding: 12px;
+              border: 1px solid #ddd;
+              border-radius: 5px;
+              font-size: 16px;
+              box-sizing: border-box;
             }
-          });
-        </script>
-      </body>
-      </html>
-    `;
-    
-    res.send(html);
+            button {
+              background: #4CAF50;
+              color: white;
+              padding: 12px 25px;
+              border: none;
+              border-radius: 5px;
+              cursor: pointer;
+              font-size: 16px;
+              width: 100%;
+            }
+            button:hover { background: #45a049; }
+            .info-text {
+              color: #666;
+              font-size: 14px;
+              margin-top: 5px;
+            }
+          </style>
+        </head>
+        <body>
+          <div id="navbar-container"></div>
+          <div class="container">
+            <h1>📅 Solicitar Nueva Cita</h1>
+            
+            <div id="message" style="margin-bottom: 20px;"></div>
+            
+            <input type="hidden" id="paciente_id" value="${pacienteId}">
+            
+            <form id="citaForm">
+              <div class="form-group">
+                <label for="medico_id">Selecciona Médico:</label>
+                <select id="medico_id" name="medico_id" required>
+                  <option value="">Selecciona un médico</option>
+                  ${medicoOptions}
+                </select>
+              </div>
+              
+              <div class="form-group">
+                <label for="fecha">Fecha de la Cita:</label>
+                <input type="date" id="fecha" name="fecha" required min="${new Date().toISOString().split('T')[0]}">
+                <div class="info-text">Selecciona una fecha futura</div>
+              </div>
+              
+              <div class="form-group">
+                <label for="hora">Hora de la Cita:</label>
+                <input type="time" id="hora" name="hora" required min="08:00" max="18:00">
+                <div class="info-text">Horario de atención: 8:00 AM - 6:00 PM</div>
+              </div>
+              
+              <div class="form-group">
+                <label for="tipo_cita">Tipo de Cita:</label>
+                <select id="tipo_cita" name="tipo_cita" required>
+                  <option value="">Selecciona tipo</option>
+                  <option value="Consulta General">Consulta General</option>
+                  <option value="Control">Control</option>
+                  <option value="Emergencia">Emergencia</option>
+                  <option value="Examen">Examen</option>
+                  <option value="Otro">Otro</option>
+                </select>
+              </div>
+              
+              <div class="form-group">
+                <label for="motivo">Motivo de la Cita:</label>
+                <textarea id="motivo" name="motivo" rows="4" required placeholder="Describe brevemente el motivo de tu cita..."></textarea>
+              </div>
+              
+              <div class="form-group">
+                <label for="notas">Notas Adicionales (opcional):</label>
+                <textarea id="notas" name="notas" rows="3" placeholder="Cualquier información adicional que quieras agregar..."></textarea>
+              </div>
+              
+              <button type="submit">📅 Solicitar Cita</button>
+            </form>
+            
+            <div style="text-align: center; margin-top: 20px;">
+              <a href="/ver-mis-citas">← Volver a Mis Citas</a>
+            </div>
+          </div>
+          
+          <script>
+            fetch('/navbar')
+              .then(response => response.text())
+              .then(html => {
+                document.getElementById('navbar-container').innerHTML = html;
+              })
+              .catch(error => console.error('Error cargando navbar:', error));
+            
+            document.getElementById('citaForm').addEventListener('submit', async function(e) {
+              e.preventDefault();
+              
+              const pacienteId = document.getElementById('paciente_id').value;
+              const medicoId = document.getElementById('medico_id').value;
+              const fecha = document.getElementById('fecha').value;
+              const hora = document.getElementById('hora').value;
+              const tipoCita = document.getElementById('tipo_cita').value;
+              const motivo = document.getElementById('motivo').value;
+              const notas = document.getElementById('notas').value;
+              
+              if (!pacienteId || !medicoId || !fecha || !hora || !tipoCita || !motivo) {
+                alert('Por favor, completa todos los campos requeridos.');
+                return;
+              }
+              
+              const data = {
+                paciente_id: pacienteId,
+                medico_id: medicoId,
+                fecha: fecha,
+                hora: hora,
+                tipo_cita: tipoCita,
+                motivo: motivo,
+                notas: notas
+              };
+              
+              try {
+                const response = await fetch('/api/citas/solicitar', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify(data)
+                });
+                
+                const result = await response.json();
+                
+                const messageDiv = document.getElementById('message');
+                if (result.success) {
+                  messageDiv.innerHTML = '<div style="background: #e6ffe6; color: #008000; padding: 15px; border-radius: 5px; margin-bottom: 20px;">✅ ' + result.message + '</div>';
+                  document.getElementById('citaForm').reset();
+                  
+                  setTimeout(() => {
+                    window.location.href = '/ver-mis-citas';
+                  }, 3000);
+                } else {
+                  messageDiv.innerHTML = '<div style="background: #ffe6e6; color: #ff0000; padding: 15px; border-radius: 5px; margin-bottom: 20px;">❌ ' + result.error + '</div>';
+                }
+              } catch (error) {
+                const messageDiv = document.getElementById('message');
+                messageDiv.innerHTML = '<div style="background: #ffe6e6; color: #ff0000; padding: 15px; border-radius: 5px; margin-bottom: 20px;">❌ Error de conexión: ' + error.message + '</div>';
+              }
+            });
+          </script>
+        </body>
+        </html>
+      `;
+      
+      res.send(html);
+    });
   });
 });
 
+// Ver citas (para médicos)
 app.get('/ver-citas', requireLogin, (req, res) => {
   const user = req.session.user;
   
@@ -5467,7 +5580,7 @@ app.get('/ver-citas', requireLogin, (req, res) => {
         <body>
           <div id="navbar-container"></div>
           <div class="container">
-            <h1 style="color: black;">📅 Mis Citas Programadas</h1>
+            <h1>📅 Mis Citas Programadas</h1>
             
             <div class="citas-grid" id="citas-container">
       `;
@@ -5563,112 +5676,89 @@ app.get('/ver-citas', requireLogin, (req, res) => {
 });
 
 // ========== APIS PARA CITAS ==========
-app.post('/api/citas/solicitar', requireLogin, requireRole('paciente'), async (req, res) => {
+app.post('/api/citas/solicitar', requireLogin, (req, res) => {
   const user = req.session.user;
-  const { medico_id, fecha, hora, tipo_cita, motivo, notas } = req.body;
+  const { paciente_id, medico_id, fecha, hora, tipo_cita, motivo, notas } = req.body;
   
-  if (!medico_id || !fecha || !hora || !tipo_cita || !motivo) {
+  if (!paciente_id || !medico_id || !fecha || !hora || !tipo_cita || !motivo) {
     return res.status(400).json({ 
       success: false, 
       error: 'Todos los campos requeridos' 
     });
   }
   
-  const fechaCita = new Date(fecha);
-  const hoy = new Date();
-  hoy.setHours(0, 0, 0, 0);
-  
-  if (fechaCita < hoy) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'No puedes solicitar citas en fechas pasadas' 
-    });
-  }
-  
-  try {
-    const pacienteResult = await new Promise((resolve, reject) => {
-      db.query('SELECT id FROM pacientes WHERE usuario_id = ?', [user.id], (err, results) => {
-        if (err) reject(err);
-        else resolve(results);
-      });
-    });
-    
-    if (pacienteResult.length === 0) {
+  // Verificar que el paciente existe
+  db.query('SELECT id FROM pacientes WHERE id = ?', [paciente_id], (err, pacienteResults) => {
+    if (err || pacienteResults.length === 0) {
       return res.status(404).json({ 
         success: false, 
         error: 'Paciente no encontrado' 
       });
     }
     
-    const paciente_id = pacienteResult[0].id;
-    
-    const medicoResult = await new Promise((resolve, reject) => {
-      db.query('SELECT id FROM usuarios WHERE id = ? AND tipo_usuario = "medico"', [medico_id], (err, results) => {
-        if (err) reject(err);
-        else resolve(results);
+    // Verificar que el médico existe
+    db.query('SELECT id FROM usuarios WHERE id = ? AND tipo_usuario = "medico"', [medico_id], (err, medicoResults) => {
+      if (err || medicoResults.length === 0) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Médico no encontrado' 
+        });
+      }
+      
+      // Verificar si ya existe una cita en ese horario
+      const checkQuery = `
+        SELECT id FROM citas 
+        WHERE medico_id = ? 
+          AND fecha = ? 
+          AND hora = ? 
+          AND estado IN ('pendiente', 'confirmada')
+      `;
+      
+      db.query(checkQuery, [medico_id, fecha, hora], (err, existingCitas) => {
+        if (err) {
+          console.error('Error verificando citas existentes:', err);
+          return res.status(500).json({ 
+            success: false, 
+            error: 'Error al verificar disponibilidad' 
+          });
+        }
+        
+        if (existingCitas.length > 0) {
+          return res.status(400).json({ 
+            success: false, 
+            error: 'El médico ya tiene una cita programada en ese horario' 
+          });
+        }
+        
+        // Insertar la cita
+        const insertQuery = `
+          INSERT INTO citas (paciente_id, medico_id, fecha, hora, tipo_cita, motivo, notas, estado)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'pendiente')
+        `;
+        
+        db.query(insertQuery, [paciente_id, medico_id, fecha, hora, tipo_cita, motivo, notas || null], (err, results) => {
+          if (err) {
+            console.error('Error insertando cita:', err);
+            return res.status(500).json({ 
+              success: false, 
+              error: 'Error al crear la cita' 
+            });
+          }
+          
+          console.log('✅ Cita creada: ID ' + results.insertId + ', Paciente ' + paciente_id + ', Médico ' + medico_id);
+          
+          res.json({ 
+            success: true, 
+            message: 'Cita solicitada correctamente. El médico la revisará y confirmará.',
+            citaId: results.insertId
+          });
+        });
       });
     });
-    
-    if (medicoResult.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Médico no encontrado' 
-      });
-    }
-    
-    const checkQuery = `
-      SELECT id FROM citas 
-      WHERE medico_id = ? 
-        AND fecha = ? 
-        AND hora = ? 
-        AND estado IN ('pendiente', 'confirmada')
-    `;
-    
-    const existingCitas = await new Promise((resolve, reject) => {
-      db.query(checkQuery, [medico_id, fecha, hora], (err, results) => {
-        if (err) reject(err);
-        else resolve(results);
-      });
-    });
-    
-    if (existingCitas.length > 0) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'El médico ya tiene una cita programada en ese horario' 
-      });
-    }
-    
-    const insertQuery = `
-      INSERT INTO citas (paciente_id, medico_id, fecha, hora, tipo_cita, motivo, notas, estado)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'pendiente')
-    `;
-    
-    const result = await new Promise((resolve, reject) => {
-      db.query(insertQuery, [paciente_id, medico_id, fecha, hora, tipo_cita, motivo, notas || null], (err, results) => {
-        if (err) reject(err);
-        else resolve(results);
-      });
-    });
-    
-    console.log('✅ Cita solicitada: ID ' + result.insertId + ', Paciente ' + paciente_id + ', Médico ' + medico_id);
-    
-    res.json({ 
-      success: true, 
-      message: 'Cita solicitada correctamente. El médico la revisará y confirmará.',
-      citaId: result.insertId
-    });
-    
-  } catch (error) {
-    console.error('Error solicitando cita:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Error al solicitar la cita' 
-    });
-  }
+  });
 });
 
 // ========== GESTIÓN DE HORARIOS MÉDICO ==========
-// Ruta para gestionar horarios (versión completa)
 app.get('/horarios-medico', requireLogin, requireRole('medico'), (req, res) => {
   const user = req.session.user;
   
@@ -5691,7 +5781,7 @@ app.get('/horarios-medico', requireLogin, requireRole('medico'), (req, res) => {
     if (horarios.length > 0) {
       horarios.forEach(horario => {
         const dia = horario.dia_semana;
-        const inicio = horario.hora_inicio.substring(0, 5); // Formato HH:MM
+        const inicio = horario.hora_inicio.substring(0, 5);
         const fin = horario.hora_fin.substring(0, 5);
         const disponible = horario.disponible ? 'Disponible' : 'No disponible';
         const estadoColor = horario.disponible ? '#4CAF50' : '#F44336';
@@ -6101,7 +6191,7 @@ app.post('/api/horarios/eliminar/:id', requireLogin, requireRole('medico'), (req
   });
 });
 
-// Ruta simplificada para ver citas pendientes (redirige a ver-citas)
+// Ruta simplificada para ver citas pendientes
 app.get('/ver-citas-pendientes', requireLogin, requireRole('medico'), (req, res) => {
   res.redirect('/ver-citas');
 });
@@ -6147,20 +6237,6 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 ======================================================
    Servidor Hospitalario v2.0 - SISTEMA COMPLETO
 ========================================================
-
-Conexión MySQL establecida
-Tabla de mensajes creada/verificada
-Tabla de citas creada/verificada
-Tabla de historiales clínicos creada/verificada
-Tabla de horarios médico creada/verificada
-
-SISTEMAS DISPONIBLES:
-• Sistema de historiales clínicos completo ✓
-• Sistema de mensajería para médicos y enfermeros ✓
-• Sistema de programación de citas completo ✓
-• Sistema de gestión de horarios médico ✓
-• Sistema de reportes Excel ✓
-• Sistema de archivos ✓
 
 Accesos disponibles:
 Local:          http://localhost:${PORT}
